@@ -71,14 +71,40 @@ class FileTypeValidator extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * An extension other than .csv is rejected regardless of contents.
+	 * A disallowed extension is rejected regardless of contents.
 	 *
 	 * @covers ::is_valid
 	 */
 	public function test_csv_rejects_disallowed_extension() {
 		$path = $this->make_file( "name,email\nJohn,john@example.com\n" );
 
-		$this->assertFalse( ( new CSV() )->is_valid( $path, 'data.txt' ) );
+		$this->assertFalse( ( new CSV() )->is_valid( $path, 'data.php' ) );
+	}
+
+	/**
+	 * The accepted delimited-text extensions are all valid.
+	 *
+	 * @covers ::is_valid
+	 * @dataProvider data_csv_accepted_extensions
+	 *
+	 * @param string $filename The filename to validate.
+	 */
+	public function test_csv_accepts_delimited_text_extensions( $filename ) {
+		$path = $this->make_file( "name,email\nJohn,john@example.com\n" );
+
+		$this->assertTrue( ( new CSV() )->is_valid( $path, $filename ) );
+	}
+
+	/**
+	 * Data provider for the accepted delimited-text extensions.
+	 *
+	 * @return array
+	 */
+	public function data_csv_accepted_extensions() {
+		return array(
+			'csv' => array( 'orders.csv' ),
+			'txt' => array( 'orders.txt' ),
+		);
 	}
 
 	/**
@@ -105,6 +131,34 @@ class FileTypeValidator extends EDD_UnitTestCase {
 	 */
 	public function test_csv_rejects_missing_file() {
 		$this->assertFalse( ( new CSV() )->is_valid( get_temp_dir() . 'does-not-exist.csv', 'does-not-exist.csv' ) );
+	}
+
+	/**
+	 * sanitize_filename() folds inner extensions so only one trailing extension remains.
+	 *
+	 * @covers \EDD\Utils\Validators\FileType\Base::sanitize_filename
+	 * @dataProvider data_csv_sanitize_filename
+	 *
+	 * @param string $filename The client-supplied filename.
+	 * @param string $expected The expected safe filename.
+	 */
+	public function test_csv_sanitize_filename( $filename, $expected ) {
+		$this->assertSame( $expected, ( new CSV() )->sanitize_filename( $filename ) );
+	}
+
+	/**
+	 * Data provider for sanitize_filename().
+	 *
+	 * @return array
+	 */
+	public function data_csv_sanitize_filename() {
+		return array(
+			'plain csv'          => array( 'orders.csv', 'orders.csv' ),
+			'plain txt'          => array( 'orders.txt', 'orders.txt' ),
+			'double extension'   => array( 'shell.php.csv', 'shell-php.csv' ),
+			'multiple dots'      => array( 'orders.2024.export.csv', 'orders-2024-export.csv' ),
+			'phtml inner'        => array( 'orders.phtml.tsv', 'orders-phtml.tsv' ),
+		);
 	}
 
 	/**
