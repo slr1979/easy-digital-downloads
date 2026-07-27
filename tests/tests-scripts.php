@@ -144,12 +144,11 @@ class Scripts extends EDD_UnitTestCase {
 	 */
 	public function _admin_scripts_dp() {
 		return array(
-			array( 'jquery-chosen',        'enqueued' ),
-			array( 'edd-admin-scripts',    'enqueued' ),
+			array( 'jquery-chosen', 'enqueued' ),
+			array( 'edd-admin-scripts', 'enqueued' ),
 			array( 'jquery-ui-datepicker', 'enqueued' ),
-			array( 'jquery-ui-dialog',     'enqueued' ),
-			array( 'media-upload',         'enqueued' ),
-			array( 'thickbox',             'enqueued' ),
+			array( 'jquery-ui-dialog', 'enqueued' ),
+			array( 'media-upload', 'enqueued' ),
 		);
 	}
 
@@ -172,10 +171,9 @@ class Scripts extends EDD_UnitTestCase {
 	 */
 	public function _admin_styles_dp() {
 		return array(
-			array( 'jquery-chosen',   'enqueued' ),
+			array( 'jquery-chosen', 'enqueued' ),
 			array( 'wp-color-picker', 'enqueued' ),
-			array( 'thickbox',        'enqueued' ),
-			array( 'edd-admin',       'enqueued' ),
+			array( 'edd-admin', 'enqueued' ),
 		);
 	}
 
