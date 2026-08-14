@@ -14,6 +14,7 @@
 namespace EDD\Tests\Gateways\PayPal;
 
 use EDD\Tests\PHPUnit\EDD_UnitTestCase;
+use EDD\Gateways\PayPal\SdkToken;
 
 /**
  * Tests for PayPal SDK loading configuration.
@@ -164,6 +165,173 @@ class SdkLoadingTest extends EDD_UnitTestCase {
 		$this->assertStringNotContainsString( 'messages', $components );
 
 		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * A successful Connect API response returns the client token.
+	 */
+	public function test_sdk_token_fetch_fresh_fetch_returns_token() {
+		$this->setup_v3_options();
+
+		add_filter( 'pre_http_request', function () {
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => 'TOKEN_FRESH' ) ),
+			);
+		} );
+
+		$token = SdkToken::fetch( 'sandbox', '', 'fresh.example.com' );
+
+		$this->assertSame( 'TOKEN_FRESH', $token );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * A second call for the same tuple is served from the static cache and
+	 * never re-fetches, even if the HTTP layer would now return a different token.
+	 */
+	public function test_sdk_token_fetch_static_cache_hit() {
+		$this->setup_v3_options();
+
+		add_filter( 'pre_http_request', function () {
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => 'TOKEN_STATIC' ) ),
+			);
+		} );
+
+		$first = SdkToken::fetch( 'sandbox', '', 'static.example.com' );
+		$this->assertSame( 'TOKEN_STATIC', $first );
+
+		// Swap the HTTP response; the static cache should shadow it.
+		remove_all_filters( 'pre_http_request' );
+		add_filter( 'pre_http_request', function () {
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => 'TOKEN_CHANGED' ) ),
+			);
+		} );
+
+		$second = SdkToken::fetch( 'sandbox', '', 'static.example.com' );
+		$this->assertSame( 'TOKEN_STATIC', $second );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * A value primed in the object cache is returned without an HTTP request.
+	 */
+	public function test_sdk_token_fetch_object_cache_hit() {
+		$this->setup_v3_options();
+
+		$mode        = 'sandbox';
+		$customer_id = '';
+		$domain      = 'objectcache.example.com';
+		$cache_key   = 'edd_paypal_sdk_token_' . md5( $mode . '_' . $customer_id . '_' . $domain );
+		wp_cache_set( $cache_key, 'TOKEN_CACHED', 'edd_paypal', 5 * MINUTE_IN_SECONDS );
+
+		// Any HTTP request would fail the test by returning a different token.
+		add_filter( 'pre_http_request', function () {
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => 'TOKEN_HTTP' ) ),
+			);
+		} );
+
+		$token = SdkToken::fetch( $mode, $customer_id, $domain );
+
+		$this->assertSame( 'TOKEN_CACHED', $token );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * A transport error (WP_Error) yields an empty token and caches nothing.
+	 */
+	public function test_sdk_token_fetch_error_returns_empty() {
+		$this->setup_v3_options();
+
+		add_filter( 'pre_http_request', function () {
+			return new \WP_Error( 'http_request_failed', 'Connection refused' );
+		} );
+
+		$token = SdkToken::fetch( 'sandbox', '', 'error.example.com' );
+
+		$this->assertSame( '', $token );
+
+		$cache_key = 'edd_paypal_sdk_token_' . md5( 'sandbox' . '_' . '' . '_' . 'error.example.com' );
+		$this->assertFalse( wp_cache_get( $cache_key, 'edd_paypal' ) );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * A non-string client_token in the response is rejected and not cached.
+	 */
+	public function test_sdk_token_fetch_non_string_token_rejected() {
+		$this->setup_v3_options();
+
+		add_filter( 'pre_http_request', function () {
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => array( 'unexpected' => 'shape' ) ) ),
+			);
+		} );
+
+		$token = SdkToken::fetch( 'sandbox', '', 'nonstring.example.com' );
+
+		$this->assertSame( '', $token );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * register_js on a non-checkout page does not fetch a client token, even
+	 * when forced to load for a Buy Now button.
+	 */
+	public function test_register_js_force_load_does_not_fetch_client_token() {
+		$this->setup_v3_options();
+		$this->mark_paypal_ready();
+
+		// Enable Fastlane so methods_requiring_client_token() would be non-empty
+		// at checkout; the gate must still skip the fetch off-checkout.
+		update_option( 'edd_paypal_sandbox_vaulting_available', true );
+		edd_update_option( 'paypal_fastlane', true );
+
+		$requested = false;
+		add_filter( 'pre_http_request', function () use ( &$requested ) {
+			$requested = true;
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => wp_json_encode( array( 'client_token' => 'SHOULD_NOT_FETCH' ) ),
+			);
+		} );
+
+		// Not on checkout. register_js( true ) mimics a Buy Now button.
+		\EDD\Gateways\PayPal\register_js( true );
+
+		$this->assertFalse( $requested, 'Buy Now buttons must not trigger the SDK-token Connect API call.' );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+		edd_delete_option( 'gateways' );
+		edd_delete_option( 'paypal_fastlane' );
+	}
+
+	/**
+	 * Enables the PayPal gateway so register_js() runs past its early guards.
+	 *
+	 * The v3 store options set in setup_v3_options() satisfy
+	 * ready_to_accept_payments(); this only needs to mark the gateway active.
+	 */
+	private function mark_paypal_ready() {
+		edd_update_option( 'gateways', array( 'paypal_commerce' => 1 ) );
 	}
 
 	/**

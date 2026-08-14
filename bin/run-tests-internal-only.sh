@@ -50,6 +50,14 @@ fi
 
 printf "\n"
 printf "Installing composer dependencies"
+# In copy mode we install into a throwaway copy of the repo, so drop the runtime SDKs
+# (Stripe/Square/Carbon) before installing. They are ~4,700 files that are loaded from
+# /libraries at runtime (already committed) and are only needed for the Mozart build —
+# never for the test suite. Skipped in --in-place mode, where it would edit the real
+# composer.json. The "|| true" keeps a renamed/removed package from aborting the run.
+if [[ "${TEST_INPLACE:-0}" != "1" ]]; then
+	composer remove --no-update stripe/stripe-php square/square nesbot/carbon >/dev/null 2>&1 || true
+fi
 composer -q --no-cache install
 printf "\r✔ Installing composer dependencies"
 printf "\n"

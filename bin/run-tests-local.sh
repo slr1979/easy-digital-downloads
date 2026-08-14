@@ -2,8 +2,10 @@
 
 set -eo pipefail
 
-OPTS=$(getopt -a --options w:p:f:x:imh --longoptions wp:filter:,php:,extra:,multisite,in-place,help --name "$0" -- "$@") || exit 1
+OPTS=$(getopt -a --options w:p:f:x:aimh --longoptions wp:filter:,php:,extra:,actions,multisite,in-place,help --name "$0" -- "$@") || exit 1
 eval set -- "$OPTS"
+
+source "$(dirname "$0")/lib/auth.sh"
 
 show_help() {
   printf -- 'Usage: %s --php|-p PHP_VERSION --wp|-w WP_VERSION [OPTIONS]\n\n' "$0";
@@ -15,10 +17,15 @@ show_help() {
   printf -- '-w, --wp\t\tSets WP version to test against (Default: latest)\n';
   printf -- '-f, --filter\t\tPasses filters into PHPUnit\n';
   printf -- '-x, --extra\t\tSets additional plugins to include (e.g. "recurring" for EDD Recurring)\n';
+  printf -- '-a, --actions\t\tRuns the edd_action heartbeat check against your local WP-CLI site (e.g. edd.local) before the test run.\n';
   printf -- '-h, --help\t\tShow help.\n';
   echo "";
+  echo "Authentication (for --extra recurring):";
+  printf -- 'A GitHub token is resolved automatically from the gh CLI (gh auth login).\n';
+  printf -- 'Falls back to COMPOSER_AUTH, then Composer'"'"'s global auth.json.\n';
+  echo "";
   echo "Environment Variables:";
-  printf -- 'COMPOSER_AUTH\t\tComposer authentication information. Should include a GitHub token if using --extra recurring\n';
+  printf -- 'COMPOSER_AUTH\t\tComposer authentication JSON. Overrides the gh CLI when set.\n';
   echo '              		Example: export COMPOSER_AUTH='"'"'{"github-oauth":{"github.com":"your_token_here"}}'"'"
 }
 
@@ -53,6 +60,10 @@ while true; do
         export TEST_EXTRA_PLUGINS="$2"
         shift 2
         ;;
+    --actions|-a )
+        TEST_ACTIONS=1
+        shift
+        ;;
     --)
         shift
         break
@@ -82,11 +93,14 @@ export FILTER="${FILTER:-}"
 # Default TEST_EXTRA_PLUGINS to empty
 export TEST_EXTRA_PLUGINS="${TEST_EXTRA_PLUGINS:-}"
 
-# If using Recurring, check for COMPOSER_AUTH
-if [[ "${TEST_EXTRA_PLUGINS}" == "recurring" ]] && [[ -z "${COMPOSER_AUTH}" ]]; then
-    echo "Warning: COMPOSER_AUTH environment variable is not set but is required for EDD Recurring"
-    echo 'Please set it with: export COMPOSER_AUTH='"'"'{"github-oauth":{"github.com":"your_token_here"}}'"'"
-    echo "Continuing anyway but installation will likely fail..."
+# Default COMPOSER_AUTH to empty so docker-compose does not warn about an unset
+# variable on runs that don't need auth. When --extra recurring is used,
+# resolve_and_validate_auth below overwrites this with the resolved token.
+export COMPOSER_AUTH="${COMPOSER_AUTH:-}"
+
+# Resolve and validate auth before spinning up Docker for flags that require it.
+if [[ "${TEST_EXTRA_PLUGINS}" == "recurring" ]]; then
+    resolve_and_validate_auth "EDD Recurring"
 fi
 
 # Create a random project name
@@ -94,7 +108,7 @@ export COMPOSE_PROJECT_NAME="$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 32 |
 
 # If TEST_ACTIONS is set to 1 and the wp command exists, try and run our action checks.
 if [[ $TEST_ACTIONS == 1 ]]; then
-	if [[ -f "$(which wp)" ]]; then
+	if command -v wp &> /dev/null; then
 		set +e
 		site_url=$(wp option get siteurl 2>&1 | tail -n1)
 
@@ -120,25 +134,21 @@ if [[ $TEST_ACTIONS == 1 ]]; then
 		printf "\n"
 		printf "\n"
 	fi
-else
-	printf "\e[1;31mTEST_ACTIONS is not enabled. Skipping action tests.\e[0m"
-	printf "\n"
-	printf "To enable Action tests set the TEST_ACTIONS environment variable to '1' either in your shell's .rc file or by running the following command:"
-	printf "\n"
-	printf "export TEST_ACTIONS=1"
-	printf "\n"
-	printf "\n"
 fi
 
-# Do this to make sure we cleanup
-set +e
+# Tear down containers and volumes on any exit (success, failure, or Ctrl-C),
+# so interrupted runs don't leave orphans under their random project name.
+cleanup() {
+  echo "Removing Docker containers..."
+  docker-compose --progress quiet -f docker-compose-phpunit.yml down -v
+}
+trap cleanup EXIT
+
 echo "Starting Docker containers..."
 docker-compose --progress quiet -f docker-compose-phpunit.yml run \
   -e "TEST_INPLACE=${TEST_INPLACE}" \
   -e "TEST_EXTRA_PLUGINS=${TEST_EXTRA_PLUGINS}" \
   -e "FILTER=${FILTER}" \
+  -e "WP_MULTISITE=${WP_MULTISITE}" \
   -e "COMPOSER_AUTH=${COMPOSER_AUTH}" \
   --rm --user $(id -u):$(id -g) wordpress
-
-echo "Removing Docker containers..."
-docker-compose --progress quiet -f docker-compose-phpunit.yml down -v

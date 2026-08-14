@@ -2,6 +2,7 @@
 namespace EDD\Tests;
 
 use EDD\Tests\PHPUnit\EDD_UnitTestCase;
+use EDD\Tests\Helpers\Licenses as LicenseData;
 
 class Activation extends EDD_UnitTestCase {
 
@@ -72,6 +73,71 @@ class Activation extends EDD_UnitTestCase {
 		$edd_options = $origin_edd_options;
 		update_option( 'edd_settings', $edd_options );
 		update_option( 'edd_version', $origin_edd_version );
+	}
+
+	/**
+	 * Pro features (Campaign Tracker and Abandoned Cart Recovery) should be enabled by
+	 * default when running the install on a licensed Pro site.
+	 *
+	 * @since 3.7.0
+	 */
+	public function test_install_settings_enables_pro_features_for_licensed_pro() {
+		if ( ! class_exists( '\\EDD\\Pro\\Core' ) ) {
+			$this->markTestSkipped( 'EDD Pro is not available.' );
+		}
+
+		global $edd_options;
+		$origin_edd_options = $edd_options;
+		$origin_settings    = get_option( 'edd_settings' );
+
+		// Simulate a licensed Pro install with the Pro features not yet set.
+		LicenseData::get_pro_license();
+		edd_delete_option( 'acr_enabled' );
+		edd_delete_option( 'campaign_tracker' );
+
+		edd_install_settings();
+
+		$this->assertEquals( '1', edd_get_option( 'acr_enabled' ) );
+		$this->assertEquals( '1', edd_get_option( 'campaign_tracker' ) );
+
+		// Restore the original settings.
+		LicenseData::delete_pro_license();
+		update_option( 'edd_settings', $origin_settings );
+		$edd_options = $origin_edd_options;
+	}
+
+	/**
+	 * Pro features should not be force-enabled by the install when the Pro license is inactive.
+	 *
+	 * @since 3.7.0
+	 */
+	public function test_install_settings_does_not_enable_pro_features_when_inactive() {
+		if ( ! class_exists( '\\EDD\\Pro\\Core' ) ) {
+			$this->markTestSkipped( 'EDD Pro is not available.' );
+		}
+
+		global $edd_options;
+		$origin_edd_options = $edd_options;
+		$origin_settings    = get_option( 'edd_settings' );
+
+		// Ensure no active Pro license, so the Pro defaults block is skipped.
+		LicenseData::delete_pro_license();
+		if ( ! edd_is_inactive_pro() ) {
+			$edd_options = $origin_edd_options;
+			$this->markTestSkipped( 'Could not simulate an inactive Pro license.' );
+		}
+
+		edd_delete_option( 'acr_enabled' );
+		edd_delete_option( 'campaign_tracker' );
+
+		edd_install_settings();
+
+		$this->assertNotEquals( '1', edd_get_option( 'acr_enabled' ) );
+		$this->assertNotEquals( '1', edd_get_option( 'campaign_tracker' ) );
+
+		// Restore the original settings.
+		update_option( 'edd_settings', $origin_settings );
+		$edd_options = $origin_edd_options;
 	}
 
 	public function test_edd_upgrades_have_completed_upgrade_payment_taxes_is_true() {

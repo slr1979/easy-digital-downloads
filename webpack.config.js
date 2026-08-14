@@ -44,6 +44,7 @@ const getJsEntryPoints = () => {
 		ignore: [
 			'./assets/src/js/admin/components/**',
 			'./assets/src/js/admin/gateways/**',
+			'./assets/src/js/admin/checkout-templates/store/**',
 			'./assets/src/js/admin/orders/order-details/**',
 			'./assets/src/js/admin/orders/order-overview/**',
 		]
@@ -95,6 +96,9 @@ const getJsEntryPoints = () => {
 		} else if ( entryName.startsWith( 'frontend-' ) ) {
 			// Frontend files: frontend/foo.entry.js -> js/frontend/foo
 			entryName = 'js/frontend/' + entryName.replace( 'frontend-', '' );
+		} else if ( entryName.startsWith( 'elementor-' ) ) {
+			// Elementor editor files: elementor/foo.entry.js -> js/elementor/foo
+			entryName = 'js/elementor/' + entryName.replace( 'elementor-', '' );
 		}
 
 		entries[ entryName ] = file;
@@ -186,6 +190,7 @@ const config = {
 			'@easy-digital-downloads/icons': path.resolve( __dirname, 'assets/src/js/utilities/icons.js' ),
 			'@easy-digital-downloads/copy': path.resolve( __dirname, 'assets/src/js/utilities/copy.js' ),
 			'@easy-digital-downloads/modal': path.resolve( __dirname, 'assets/src/js/utilities/modal.js' ),
+			'@easy-digital-downloads/cart-loading': path.resolve( __dirname, 'assets/src/js/frontend/utilities/cart-loading.js' ),
 		},
 	},
 	entry: {
@@ -200,17 +205,22 @@ const config = {
 	externals: {
 		jquery: 'jQuery',
 		$: 'jQuery',
-		'@wordpress/element': 'wp.element',
-		'react': 'React',
-		'react-dom': 'ReactDOM',
 		'tom-select': 'TomSelect',
+		'@wordpress/element': 'wp.element',
+		'@wordpress/i18n': 'wp.i18n',
+		'@wordpress/data': 'wp.data',
+		'@wordpress/data-controls': 'wp.dataControls',
+		'@wordpress/components': 'wp.components',
+		'@wordpress/api-fetch': 'wp.apiFetch',
+		react: 'React',
+		'react-dom': 'ReactDOM',
+		'react/jsx-runtime': 'ReactJSXRuntime',
 	},
 	plugins: [
 		new MiniCSSExtractPlugin( {
 			filename: ( pathData ) => {
 				const name = pathData.chunk.name;
 				if ( name.startsWith( 'pro/css/' ) ) {
-					// Pro CSS: pro/css/invoice/style -> pro/css/invoice/style.min.css
 					return `${ name }.min.css`;
 				}
 				return `${ name.replace( '-style', '' ) }.min.css`;
@@ -221,7 +231,6 @@ const config = {
 			filename: ( pathData ) => {
 				const name = pathData.chunk.name;
 				if ( name.startsWith( 'pro/css/' ) ) {
-					// Pro RTL CSS: pro/css/invoice/style -> pro/css/invoice/style-rtl.min.css
 					return `${ name.replace( '-style', '' ) }-rtl.min.css`;
 				}
 				return `${ name.replace( '-style', '' ) }-rtl.min.css`;

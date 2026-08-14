@@ -14,6 +14,7 @@
 
 namespace EDD\Tests\Gateways\PayPal;
 
+use EDD\Gateways\PayPal\V3\ConnectSync;
 use EDD\Gateways\PayPal\V3\Credentials;
 use EDD\Gateways\PayPal\V3\KeyRotation;
 use EDD\Gateways\PayPal\V3\Merchant;
@@ -79,6 +80,7 @@ class OnboardingTest extends EDD_UnitTestCase {
 			delete_option( sprintf( Onboarding::TRACKING_ID_OPTION, $mode ) );
 			delete_option( "edd_paypal_commerce_connect_details_{$mode}" );
 			delete_option( "edd_paypal_commerce_webhook_id_{$mode}" );
+			delete_option( sprintf( ConnectSync::REGISTERED_URL_OPTION, $mode ) );
 			edd_delete_option( "paypal_{$mode}_client_id" );
 			edd_delete_option( "paypal_{$mode}_client_secret" );
 		}
@@ -614,7 +616,267 @@ class OnboardingTest extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * get_merchant_status adopts a proxy-handed rotated key and never caches it.
+	 * register_store sends home_url() (not site_url()) as the Connect API site_url.
+	 *
+	 * Invokes the private register_store() via reflection and captures the
+	 * outbound /v3/stores/register body.
+	 */
+	public function test_register_store_payload_uses_home_url() {
+		// register_store() refuses to proceed without secure WP salts; the test
+		// suite's wp-tests-config typically ships placeholder salts, so skip
+		// rather than report a false failure when they are not secure.
+		if ( ! \EDD\Utils\Validators\Salts::are_secure() ) {
+			$this->markTestSkipped( 'Secure WordPress salts are required for register_store().' );
+		}
+
+		add_filter( 'edd_is_test_mode', '__return_true' );
+
+		$captured = array();
+		add_filter( 'pre_http_request', function( $status, $args, $url ) use ( &$captured ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				$captured = json_decode( $args['body'], true );
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => array( 'content-type' => 'application/json' ),
+					'body'     => wp_json_encode( array(
+						'store_id' => 'store-uuid',
+						'hmac_key' => str_repeat( 'a', 64 ),
+					) ),
+				);
+			}
+			// Signup-link step.
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array(
+					'signup_link' => 'https://paypal.test/signup',
+					'tracking_id' => 'track-123',
+				) ),
+			);
+		}, 10, 3 );
+
+		$reflection = new \ReflectionMethod( Onboarding::class, 'register_store' );
+		$reflection->setAccessible( true );
+		$reflection->invoke( null );
+
+		$this->assertArrayHasKey( 'site_url', $captured );
+		$this->assertSame( home_url(), $captured['site_url'] );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * register_store() records the URL baseline on a successful first-time
+	 * registration, so a later re-registration attempt can be checked against it
+	 * without waiting on the next daily reconcile cron.
+	 */
+	public function test_register_store_records_baseline_on_success() {
+		if ( ! \EDD\Utils\Validators\Salts::are_secure() ) {
+			$this->markTestSkipped( 'Secure WordPress salts are required for register_store().' );
+		}
+
+		add_filter( 'edd_is_test_mode', '__return_true' );
+
+		add_filter( 'pre_http_request', function( $status, $args, $url ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => array( 'content-type' => 'application/json' ),
+					'body'     => wp_json_encode( array(
+						'store_id' => 'store-uuid',
+						'hmac_key' => str_repeat( 'a', 64 ),
+					) ),
+				);
+			}
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array( 'signup_link' => 'https://paypal.test/signup' ) ),
+			);
+		}, 10, 3 );
+
+		$reflection = new \ReflectionMethod( Onboarding::class, 'register_store' );
+		$reflection->setAccessible( true );
+		$reflection->invoke( null );
+
+		$this->assertSame( home_url(), ConnectSync::get_registered_url( 'sandbox' ) );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * register_store() blocks re-registration when home_url() looks like a
+	 * staging/local host and doesn't match a previously registered production
+	 * URL for this mode — this closes the gap where disconnecting and
+	 * reconnecting from a staging clone could otherwise hijack an established
+	 * production store's Connect API registration.
+	 */
+	public function test_register_store_blocks_reregister_for_staging_host_over_established_baseline() {
+		if ( ! \EDD\Utils\Validators\Salts::are_secure() ) {
+			$this->markTestSkipped( 'Secure WordPress salts are required for register_store().' );
+		}
+
+		add_filter( 'edd_is_test_mode', '__return_true' );
+		ConnectSync::set_registered_url( 'sandbox', 'https://example.com' );
+		update_option( 'home', 'https://clone.wpengine.com' );
+
+		$registered = false;
+		add_filter( 'pre_http_request', function( $status, $args, $url ) use ( &$registered ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				$registered = true;
+			}
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array(
+					'store_id' => 'store-uuid',
+					'hmac_key' => str_repeat( 'a', 64 ),
+				) ),
+			);
+		}, 10, 3 );
+
+		$reflection = new \ReflectionMethod( Onboarding::class, 'register_store' );
+		$reflection->setAccessible( true );
+		$result = $reflection->invoke( null );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'edd_paypal_v3_non_production_register', $result->get_error_code() );
+		$this->assertFalse( $registered, 'register_store should never be called for a staging-looking host over an established baseline.' );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * register_store() still allows a re-registration when the URL has drifted
+	 * to a new host that does not look like staging/local — a genuine domain
+	 * migration is not blocked by the guard.
+	 */
+	public function test_register_store_allows_reregister_when_new_host_looks_production() {
+		if ( ! \EDD\Utils\Validators\Salts::are_secure() ) {
+			$this->markTestSkipped( 'Secure WordPress salts are required for register_store().' );
+		}
+
+		add_filter( 'edd_is_test_mode', '__return_true' );
+		ConnectSync::set_registered_url( 'sandbox', 'https://old-domain.com' );
+		update_option( 'home', 'https://new-domain.com' );
+
+		$captured = array();
+		add_filter( 'pre_http_request', function( $status, $args, $url ) use ( &$captured ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				$captured = json_decode( $args['body'], true );
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => array( 'content-type' => 'application/json' ),
+					'body'     => wp_json_encode( array(
+						'store_id' => 'store-uuid',
+						'hmac_key' => str_repeat( 'a', 64 ),
+					) ),
+				);
+			}
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array( 'signup_link' => 'https://paypal.test/signup' ) ),
+			);
+		}, 10, 3 );
+
+		$reflection = new \ReflectionMethod( Onboarding::class, 'register_store' );
+		$reflection->setAccessible( true );
+		$result = $reflection->invoke( null );
+
+		$this->assertIsArray( $result );
+		$this->assertSame( 'https://new-domain.com', $captured['site_url'] );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * reconnect() preserves the URL-sync baseline (rather than clearing it), so
+	 * register_store()'s guard still has something to check a later
+	 * registration attempt against.
+	 */
+	public function test_reconnect_preserves_url_sync_baseline() {
+		ConnectSync::set_registered_url( 'sandbox', 'https://example.com' );
+
+		Onboarding::reconnect( 'sandbox' );
+
+		$this->assertSame( 'https://example.com', ConnectSync::get_registered_url( 'sandbox' ) );
+	}
+
+	/**
+	 * KeyRotation::ensure() re-registers with home_url() as the Connect API site_url.
+	 */
+	public function test_key_rotation_ensure_payload_uses_home_url() {
+		add_filter( 'edd_is_test_mode', '__return_true' );
+
+		// A store ID exists but no valid key, so ensure() re-registers.
+		update_option( 'edd_paypal_sandbox_store_id', 'store-uuid' );
+
+		$captured = array();
+		add_filter( 'pre_http_request', function( $status, $args, $url ) use ( &$captured ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				$captured = json_decode( $args['body'], true );
+			}
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array(
+					'store_id' => 'store-uuid',
+					'hmac_key' => str_repeat( 'a', 64 ),
+				) ),
+			);
+		}, 10, 3 );
+
+		KeyRotation::ensure( 'sandbox' );
+
+		$this->assertArrayHasKey( 'site_url', $captured );
+		$this->assertSame( home_url(), $captured['site_url'] );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * KeyRotation::ensure() does not re-register when home_url() looks like a
+	 * staging host — this guards against a production clone (with different
+	 * WP salts, which breaks HMAC decryption) hijacking the Connect API
+	 * registration just by an admin loading the PayPal settings page.
+	 */
+	public function test_key_rotation_ensure_skips_reregister_for_staging_host() {
+		add_filter( 'edd_is_test_mode', '__return_true' );
+		update_option( 'edd_paypal_sandbox_store_id', 'store-uuid' );
+		update_option( 'home', 'https://clone.wpengine.com' );
+
+		$registered = false;
+		add_filter( 'pre_http_request', function( $status, $args, $url ) use ( &$registered ) {
+			if ( false !== strpos( $url, '/v3/stores/register' ) ) {
+				$registered = true;
+			}
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => array( 'content-type' => 'application/json' ),
+				'body'     => wp_json_encode( array(
+					'store_id' => 'store-uuid',
+					'hmac_key' => str_repeat( 'a', 64 ),
+				) ),
+			);
+		}, 10, 3 );
+
+		$result = KeyRotation::ensure( 'sandbox' );
+
+		$this->assertFalse( $result, 'ensure() should report failure rather than recover against a hijacked registration.' );
+		$this->assertFalse( $registered, 'register_store should never be called for a staging-looking host.' );
+
+		remove_all_filters( 'pre_http_request' );
+		remove_filter( 'edd_is_test_mode', '__return_true' );
+	}
+
+	/**
+	 * get_merchant_status adopts a Connect API-handed rotated key and never caches it.
 	 */
 	public function test_get_merchant_status_adopts_rotated_key() {
 		update_option( 'edd_paypal_sandbox_store_id', 'store-uuid' );

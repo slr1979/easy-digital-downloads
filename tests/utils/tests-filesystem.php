@@ -126,4 +126,28 @@ class FileSystem extends EDD_UnitTestCase {
 
 		$this->assertSame( filemtime( $file ), \EDD\Utils\FileSystem::filemtime( $file ) );
 	}
+
+	public function test_get_chmod_file_returns_int() {
+		$this->assertIsInt( \EDD\Utils\FileSystem::get_chmod_file() );
+	}
+
+	public function test_get_chmod_file_returns_fs_chmod_file_constant() {
+		// Calling the helper initializes the filesystem, which defines FS_CHMOD_FILE.
+		$mode = \EDD\Utils\FileSystem::get_chmod_file();
+
+		$this->assertTrue( defined( 'FS_CHMOD_FILE' ) );
+		$this->assertSame( FS_CHMOD_FILE, $mode );
+	}
+
+	public function test_get_chmod_file_is_within_permission_range() {
+		$mode = \EDD\Utils\FileSystem::get_chmod_file();
+
+		$this->assertGreaterThanOrEqual( 0, $mode );
+		$this->assertLessThanOrEqual( 0777, $mode );
+	}
+
+	public function test_get_chmod_file_preserves_owner_write() {
+		// Every caller only needs owner write, which FS_CHMOD_FILE must preserve.
+		$this->assertSame( 0200, \EDD\Utils\FileSystem::get_chmod_file() & 0200 );
+	}
 }

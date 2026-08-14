@@ -9,6 +9,13 @@ use EDD\Tests\PHPUnit\EDD_UnitTestCase;
  */
 class Validator extends EDD_UnitTestCase {
 
+	public function tearDown(): void {
+		// Reset the block-template global so a simulated template never leaks into other tests.
+		unset( $GLOBALS['_wp_current_template_content'] );
+
+		parent::tearDown();
+	}
+
 	public function test_edd_is_checkout_setting() {
 		$checkout_page = edd_get_option( 'purchase_page' );
 
@@ -219,6 +226,12 @@ class Validator extends EDD_UnitTestCase {
 	}
 
 	public function test_get_checkout_type_elementor() {
+		// The stub redeclares \Elementor\Plugin; only load it when real Elementor is
+		// absent, otherwise a full suite run with real Elementor fatals on redeclare.
+		if ( class_exists( '\Elementor\Plugin', false ) ) {
+			$this->markTestSkipped( 'Real Elementor is active; this test exercises the Elementor stub only.' );
+		}
+
 		require_once EDD_PLUGIN_DIR . 'tests/helpers/stubs/elementor.php';
 
 		$page_id = $this->factory->post->create(
@@ -248,5 +261,149 @@ class Validator extends EDD_UnitTestCase {
 
 		\Elementor\Plugin::reset();
 		wp_delete_post( $page_id );
+	}
+
+	/**
+	 * The inner-blocks checkout makes per-section coverage decisions (the cart's
+	 * discount-form suppression, the UserDetails fallback) by asking has_block()
+	 * for a specific inner block. So the second argument must detect each inner
+	 * block independently, not just the parent edd/checkout block.
+	 */
+	public function test_has_block_detects_personal_info_inner_block() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout --><!-- wp:edd/checkout-personal-info /--><!-- /wp:edd/checkout -->',
+			)
+		);
+
+		$this->assertTrue( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-personal-info' ) );
+	}
+
+	/**
+	 * A page can contain the parent checkout and some inner blocks but omit others.
+	 * has_block() must report the absent block as missing so the fallback logic runs.
+	 */
+	public function test_has_block_returns_false_when_inner_block_absent() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout --><!-- wp:edd/checkout-payment-info /--><!-- /wp:edd/checkout -->',
+			)
+		);
+
+		$this->assertFalse( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-personal-info' ) );
+	}
+
+	/**
+	 * Detecting one inner block must not imply the presence of another.
+	 */
+	public function test_has_block_detects_inner_blocks_independently() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout --><!-- wp:edd/checkout-discount-form /--><!-- /wp:edd/checkout -->',
+			)
+		);
+
+		$this->assertTrue( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-discount-form' ) );
+		$this->assertFalse( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-personal-info' ) );
+	}
+
+	/**
+	 * The default second argument must still resolve the parent checkout block,
+	 * so existing callers that pass only a post ID keep working.
+	 */
+	public function test_has_block_default_argument_resolves_parent_checkout() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout /-->',
+			)
+		);
+
+		$this->assertTrue( \EDD\Checkout\Validator::has_block( $post_id ) );
+		$this->assertFalse( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-personal-info' ) );
+	}
+
+	/**
+	 * During AJAX (e.g. gateway switches) the page is identified by the posted
+	 * current_page, with no post ID argument. Inner-block detection must work there too.
+	 */
+	public function test_has_block_detects_inner_block_via_ajax_current_page() {
+		$post_id               = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout --><!-- wp:edd/checkout-discount-form /--><!-- /wp:edd/checkout -->',
+			)
+		);
+		$_POST['current_page'] = $post_id;
+		add_filter( 'wp_doing_ajax', '__return_true' );
+
+		$this->assertTrue( \EDD\Checkout\Validator::has_block( null, 'edd/checkout-discount-form' ) );
+
+		unset( $_POST['current_page'] );
+		remove_filter( 'wp_doing_ajax', '__return_true' );
+	}
+
+	/**
+	 * A page can use a full-site-editing template (assigned via Page Attributes) that
+	 * defines the checkout layout directly in the template rather than in the page's own
+	 * content. WordPress exposes the resolved template's markup via the
+	 * $_wp_current_template_content global while rendering that request, so has_block()
+	 * must fall back to checking it when the page's own content doesn't have the block.
+	 */
+	public function test_has_block_detects_inner_block_in_current_template() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout /-->',
+			)
+		);
+		$this->go_to( get_permalink( $post_id ) );
+
+		$GLOBALS['_wp_current_template_content'] = '<!-- wp:edd/checkout --><!-- wp:edd/checkout-payment-info /--><!-- /wp:edd/checkout -->';
+
+		$this->assertTrue( \EDD\Checkout\Validator::has_block( null, 'edd/checkout-payment-info' ) );
+	}
+
+	public function test_has_block_returns_false_when_absent_from_current_template() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout /-->',
+			)
+		);
+		$this->go_to( get_permalink( $post_id ) );
+
+		$GLOBALS['_wp_current_template_content'] = '<!-- wp:edd/checkout --><!-- wp:edd/checkout-payment-info /--><!-- /wp:edd/checkout -->';
+
+		$this->assertFalse( \EDD\Checkout\Validator::has_block( null, 'edd/checkout-personal-info' ) );
+	}
+
+	/**
+	 * An explicit post ID is an unambiguous request to check that specific post, so it
+	 * must take priority over the current-template fallback rather than being combined
+	 * with it.
+	 */
+	public function test_has_block_explicit_post_id_ignores_current_template() {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_content' => '<!-- wp:edd/checkout /-->',
+			)
+		);
+
+		$GLOBALS['_wp_current_template_content'] = '<!-- wp:edd/checkout --><!-- wp:edd/checkout-payment-info /--><!-- /wp:edd/checkout -->';
+
+		$this->assertFalse( \EDD\Checkout\Validator::has_block( $post_id, 'edd/checkout-payment-info' ) );
 	}
 }

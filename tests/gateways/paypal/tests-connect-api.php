@@ -400,4 +400,43 @@ class ConnectAPITest extends EDD_UnitTestCase {
 		$api = new ConnectAPI( 'sandbox' );
 		$this->assertSame( 0, $api->get_last_response_code() );
 	}
+
+	/**
+	 * A 4xx response carrying a structured Connect API error body should surface
+	 * the decoded array (not a generic WP_Error) so callers can branch on
+	 * the error code.
+	 */
+	public function test_make_request_surfaces_structured_error_on_4xx() {
+		remove_all_filters( 'pre_http_request' );
+		add_filter(
+			'pre_http_request',
+			function () {
+				return array(
+					'response' => array(
+						'code'    => 403,
+						'message' => 'Forbidden',
+					),
+					'headers'  => array( 'content-type' => 'application/json' ),
+					'body'     => wp_json_encode(
+						array(
+							'error' => array(
+								'code'    => 'applepay_not_available',
+								'message' => 'This account is not subscribed to Apple Pay.',
+							),
+						)
+					),
+				);
+			},
+			10,
+			3
+		);
+
+		$response = $this->api->make_request( 'POST', '/v3/paypal/applepay/register-domain', array( 'domain' => 'example.com' ) );
+
+		$this->assertIsArray( $response );
+		$this->assertFalse( is_wp_error( $response ) );
+		$this->assertSame( 'applepay_not_available', ConnectAPI::get_error_code( $response ) );
+
+		remove_all_filters( 'pre_http_request' );
+	}
 }

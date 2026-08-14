@@ -104,6 +104,30 @@ class Registration extends EDD_UnitTestCase {
 		$this->assertEquals( 'edd/terms', $block->name );
 	}
 
+	public function test_checkout_cart_inner_block_is_registered() {
+		$block = self::$registry->get_registered( 'edd/checkout-cart' );
+
+		$this->assertEquals( 'edd/checkout-cart', $block->name );
+	}
+
+	public function test_checkout_personal_info_inner_block_is_registered() {
+		$block = self::$registry->get_registered( 'edd/checkout-personal-info' );
+
+		$this->assertEquals( 'edd/checkout-personal-info', $block->name );
+	}
+
+	public function test_checkout_payment_info_inner_block_is_registered() {
+		$block = self::$registry->get_registered( 'edd/checkout-payment-info' );
+
+		$this->assertEquals( 'edd/checkout-payment-info', $block->name );
+	}
+
+	public function test_checkout_discount_form_inner_block_is_registered() {
+		$block = self::$registry->get_registered( 'edd/checkout-discount-form' );
+
+		$this->assertEquals( 'edd/checkout-discount-form', $block->name );
+	}
+
 	public function test_checkout_has_blocks_is_true() {
 		$this->assertTrue( \EDD\Checkout\Validator::has_block() );
 		$this->assertTrue( \EDD\Blocks\Checkout\Functions\checkout_has_blocks() );

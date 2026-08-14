@@ -143,7 +143,7 @@ class FileTypeValidator extends EDD_UnitTestCase {
 	 * @param string $expected The expected safe filename.
 	 */
 	public function test_csv_sanitize_filename( $filename, $expected ) {
-		$this->assertSame( $expected, ( new CSV() )->sanitize_filename( $filename ) );
+		$this->assertSame( $expected, CSV::sanitize_filename( $filename ) );
 	}
 
 	/**

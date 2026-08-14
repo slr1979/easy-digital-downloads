@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <ruleset name="WordPress Coding Standards for Easy Digital Downloads">
 
-	<config name="testVersion" value="7.4-"/>
-	<config name="minimum_supported_wp_version" value="5.8-" />
+	<config name="testVersion" value="8.0-"/>
+	<config name="minimum_supported_wp_version" value="6.7-" />
 	<config name="text_domain" value="easy-digital-downloads"/>
 
 	<rule ref="PHPCompatibility">
@@ -12,12 +12,10 @@
 	<rule ref="WordPress-Core">
 		<exclude name="Generic.Commenting.DocComment.MissingShort" />
 		<exclude name="Generic.NamingConventions.CamelCapsFunctionName.MethodDoubleUnderscore" />
-		<exclude name="Generic.Commenting.DocComment.MissingShort" />
 		<exclude name="Generic.Commenting.DocComment.ShortNotCapital" />
 		<exclude name="Squiz.Commenting.FunctionComment.MissingParamTag" />
 		<exclude name="Squiz.Commenting.FileComment.Missing" />
 		<exclude name="WordPress.Files.FileName.InvalidClassFileName" />
-		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase" />
 		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase" />
  		<exclude name="WordPress.NamingConventions.ValidFunctionName.FunctionDoubleUnderscore" />
 	</rule>
