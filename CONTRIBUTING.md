@@ -15,6 +15,22 @@ __Please Note:__ GitHub is for bug reports and contributions only - if you have 
   * Clearly describe the issue including steps to reproduce the bug.
   * Make sure you fill in the earliest version that you know has the issue as well as the version of WordPress you're using.
 
+## Development Prerequisites
+
+### Mozart (vendor prefixing)
+
+Mozart must be installed globally — it is **not** a project-level Composer dependency:
+
+```bash
+composer global require coenjacobs/mozart
+```
+
+Make sure your global Composer `bin` directory is on your `$PATH` (typically `~/.composer/vendor/bin` or `~/.config/composer/vendor/bin`). Once installed, run the prefixing script with:
+
+```bash
+composer run mozart
+```
+
 ## Making Changes
 
 * Fork the repository on GitHub

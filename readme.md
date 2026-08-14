@@ -49,5 +49,26 @@ EDD has multiple scripts to prepare installable packages:
 * `translate:repo`: Translate the repository copy of EDD. Runs as part of `npm run repo`; generally do not run this directly.
 * `update`: Updates all Composer packages and runs the Mozart script. Only run this if a Composer library needs to be updated.
 
+## Composer packages
+
+A handful of production dependencies (`stripe/stripe-php`, `nesbot/carbon`, `square/square`) are bundled into `/libraries/` rather than loaded from `vendor/`. [Mozart](https://github.com/coenjacobs/mozart) rewrites them into the `EDD\Vendor\` namespace so they can't collide with a different copy of the same library shipped by another plugin on the site.
+
+Mozart is installed **globally**, not as a project dependency:
+
+```
+composer global require coenjacobs/mozart
+```
+
+The `compose` step copies each package into `/libraries/`, prefixes its namespace, and then **deletes the original from `vendor/`** (`delete_vendor_directories` in the `extra.mozart` config). That delete is intentional — leaving the unprefixed copy in `vendor/` would ship the library twice and re-register its original namespace, defeating the prefixing.
+
+Because the source packages are removed from `vendor/` after a compose, you must restore them before composing again:
+
+```
+composer install        # restore the source packages into vendor/ (respects composer.lock)
+composer run mozart     # compose into /libraries/, then dump the production autoloader
+```
+
+Only run this when a bundled library actually needs to change. The `npm run update` script wraps the same Mozart step for the full update flow.
+
 ## E2E Tests
 End-to-end tests use Playwright against an ephemeral Docker-managed WordPress + EDD site. No manual site setup required. See `e2e/README.md` for full details.

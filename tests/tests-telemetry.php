@@ -3,6 +3,7 @@
 namespace EDD\Tests;
 
 use EDD\Telemetry\Data;
+use EDD\Telemetry\Stats;
 use EDD\Utils\ListHandler;
 use EDD\Tests\PHPUnit\EDD_UnitTestCase;
 
@@ -134,5 +135,88 @@ class Telemetry extends EDD_UnitTestCase {
 	public function test_environment_checkout_type_default_is_block() {
 		$this->assertArrayHasKey( 'checkout_type', self::$data['environment'] );
 		$this->assertEquals( 'block', self::$data['environment']['checkout_type'] );
+	}
+
+	public function test_stats_contains_customer_count() {
+		$this->assertArrayHasKey( 'customer_count', self::$data['stats'] );
+	}
+
+	public function test_stats_contains_median_orders_per_customer() {
+		$this->assertArrayHasKey( 'median_orders_per_customer', self::$data['stats'] );
+	}
+
+	public function test_customer_count_matches_number_of_customers() {
+		$this->seed_customers( array( 3, 1, 1 ) );
+
+		$stats = ( new Stats() )->get();
+
+		$this->assertEquals( 3, $stats['customer_count'] );
+	}
+
+	public function test_median_orders_per_customer_is_zero_with_no_customers() {
+		global $wpdb;
+		$wpdb->query( "DELETE FROM {$wpdb->edd_customers}" );
+
+		$stats = ( new Stats() )->get();
+
+		$this->assertEquals( 0, $stats['median_orders_per_customer'] );
+	}
+
+	public function test_median_orders_per_customer_uses_median_not_mean() {
+		// Mean of these is 25.75, but the median is 1.
+		$this->seed_customers( array( 1, 1, 1, 100 ) );
+
+		$stats = ( new Stats() )->get();
+
+		$this->assertEquals( 1, $stats['median_orders_per_customer'] );
+	}
+
+	public function test_median_orders_per_customer_with_odd_count() {
+		// Sorted: 1, 4, 100. Middle value is 4.
+		$this->seed_customers( array( 100, 1, 4 ) );
+
+		$stats = ( new Stats() )->get();
+
+		$this->assertEquals( 4, $stats['median_orders_per_customer'] );
+	}
+
+	public function test_median_orders_per_customer_with_even_count_averages_middle() {
+		// Sorted: 1, 2, 4, 100. Median is the average of 2 and 4 = 3.
+		$this->seed_customers( array( 100, 1, 4, 2 ) );
+
+		$stats = ( new Stats() )->get();
+
+		$this->assertEquals( 3, $stats['median_orders_per_customer'] );
+	}
+
+	/**
+	 * Replaces all customers with a known set, each having the given purchase_count.
+	 *
+	 * @param int[] $purchase_counts One customer is created per entry, with that purchase_count.
+	 */
+	private function seed_customers( array $purchase_counts ) {
+		global $wpdb;
+		$wpdb->query( "DELETE FROM {$wpdb->edd_customers}" );
+
+		foreach ( $purchase_counts as $i => $count ) {
+			edd_add_customer(
+				array(
+					'email'          => "median-test-{$i}@example.com",
+					'purchase_count' => $count,
+				)
+			);
+		}
+	}
+
+	public function test_settings_includes_stripe_elements_mode() {
+		// The setting is only registered for stores with legacy card elements access,
+		// so telemetry must always backfill it from the helper function.
+		$this->assertTrue( function_exists( 'edds_get_elements_mode' ) );
+		$this->assertArrayHasKey( 'stripe_elements_mode', self::$data['settings'] );
+		$this->assertContains( self::$data['settings']['stripe_elements_mode'], array( 'card-elements', 'payment-elements' ) );
+	}
+
+	public function test_settings_stripe_elements_mode_matches_helper() {
+		$this->assertEquals( edds_get_elements_mode(), self::$data['settings']['stripe_elements_mode'] );
 	}
 }

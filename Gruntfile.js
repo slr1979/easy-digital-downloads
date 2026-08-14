@@ -16,7 +16,6 @@ module.exports = function ( grunt ) {
 		'vendor/composer/**',
 		'vendor/symfony/deprecation-contracts/**',
 		'vendor/symfony/polyfill-php80/**',
-		'vendor/symfony/polyfill-mbstring/**',
 		'*.php',
 		'*.txt',
 	];
