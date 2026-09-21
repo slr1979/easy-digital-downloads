@@ -118,6 +118,70 @@ class AbstractImporterTest extends EDD_UnitTestCase {
 	}
 
 	/**
+	 * Test site token replacement - site logo resolves the theme's custom logo.
+	 *
+	 * @since 3.7.1
+	 */
+	public function test_site_token_replacement_site_logo_uses_custom_logo() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'custom-logo.png',
+				'post_parent'    => 0,
+				'post_mime_type' => 'image/png',
+				'post_title'     => 'Custom Logo',
+			)
+		);
+		set_theme_mod( 'custom_logo', $attachment_id );
+
+		$expected = wp_get_attachment_image_url( $attachment_id, 'full' );
+		$this->assertNotEmpty( $expected, 'The logo attachment resolved to no URL, so the token assertion would compare two empty strings.' );
+
+		$importer = new TestableImporter();
+
+		$this->assertSame( $expected, $importer->public_replace_site_tokens( '{{site_logo}}' ) );
+	}
+
+	/**
+	 * Test site token replacement - site logo falls back to the site icon.
+	 *
+	 * @since 3.7.1
+	 */
+	public function test_site_token_replacement_site_logo_falls_back_to_site_icon() {
+		$this->assertEmpty( get_theme_mod( 'custom_logo' ), 'A custom logo would short-circuit the fallback this test measures.' );
+
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'site-icon.png',
+				'post_parent'    => 0,
+				'post_mime_type' => 'image/png',
+				'post_title'     => 'Site Icon',
+			)
+		);
+		update_option( 'site_icon', $attachment_id );
+
+		$expected = wp_get_attachment_image_url( $attachment_id, 'full' );
+		$this->assertNotEmpty( $expected, 'The icon attachment resolved to no URL, so the token assertion would compare two empty strings.' );
+
+		$importer = new TestableImporter();
+
+		$this->assertSame( $expected, $importer->public_replace_site_tokens( '{{site_logo}}' ) );
+	}
+
+	/**
+	 * Test site token replacement - site logo is empty with no logo and no icon.
+	 *
+	 * @since 3.7.1
+	 */
+	public function test_site_token_replacement_site_logo_is_empty_without_logo_or_icon() {
+		$this->assertEmpty( get_theme_mod( 'custom_logo' ) );
+		$this->assertEmpty( get_option( 'site_icon' ) );
+
+		$importer = new TestableImporter();
+
+		$this->assertSame( 'Logo: ', $importer->public_replace_site_tokens( 'Logo: {{site_logo}}' ) );
+	}
+
+	/**
 	 * Test content validation with empty content.
 	 */
 	public function test_validate_content_empty() {

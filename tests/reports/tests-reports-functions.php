@@ -950,6 +950,82 @@ class Functions extends EDD_UnitTestCase {
 	}
 
 	/**
+	 * @covers \EDD\Reports\parse_dates_for_range()
+	 */
+	public function test_parse_dates_for_range_returns_a_new_object_each_call() {
+		$first  = Reports\parse_dates_for_range( 'this_month' );
+		$second = Reports\parse_dates_for_range( 'this_month' );
+
+		$this->assertNotSame( $first['start'], $second['start'] );
+		$this->assertNotSame( $first['end'], $second['end'] );
+	}
+
+	/**
+	 * @covers \EDD\Reports\parse_dates_for_range()
+	 */
+	public function test_parse_dates_for_range_reflects_changed_filter_dates() {
+		$_GET['range']       = 'other';
+		$_GET['filter_from'] = '2024-03-01';
+		$_GET['filter_to']   = '2024-03-01';
+
+		$march = Reports\parse_dates_for_range();
+
+		$_GET['filter_from'] = '2024-04-15';
+		$_GET['filter_to']   = '2024-04-15';
+
+		$april = Reports\parse_dates_for_range();
+
+		$this->assertSame( '2024-03-01', $march['start']->format( 'Y-m-d' ) );
+		$this->assertSame( '2024-04-15', $april['start']->format( 'Y-m-d' ) );
+	}
+
+	/**
+	 * @covers \EDD\Reports\parse_dates_for_range()
+	 */
+	public function test_parse_dates_for_range_reflects_changed_timezone() {
+		$utc = Reports\parse_dates_for_range( 'today' );
+
+		update_option( 'timezone_string', 'America/Chicago' );
+		EDD()->utils->get_time_zone( true );
+
+		$chicago = Reports\parse_dates_for_range( 'today' );
+
+		delete_option( 'timezone_string' );
+		EDD()->utils->get_time_zone( true );
+
+		$this->assertNotSame( $utc['start']->format( 'Y-m-d H:i' ), $chicago['start']->format( 'Y-m-d H:i' ) );
+	}
+
+	/**
+	 * @covers \EDD\Reports\get_filter_value()
+	 */
+	public function test_get_filter_value_reflects_changed_request_value() {
+		$_GET['gateways'] = 'stripe';
+		$_GET['products'] = '5';
+
+		$this->assertSame( 'stripe', Reports\get_filter_value( 'gateways' ) );
+		$this->assertSame( '5', Reports\get_filter_value( 'products' ) );
+
+		$_GET['gateways'] = 'paypal_commerce';
+		$_GET['products'] = '12';
+
+		$this->assertSame( 'paypal_commerce', Reports\get_filter_value( 'gateways' ) );
+		$this->assertSame( '12', Reports\get_filter_value( 'products' ) );
+	}
+
+	/**
+	 * @covers \EDD\Reports\parse_dates_for_range()
+	 */
+	public function test_mutating_a_returned_date_does_not_affect_the_next_call() {
+		$dates = Reports\parse_dates_for_range( 'this_month' );
+		$dates['start']->setTimezone( new \DateTimeZone( 'America/Chicago' ) );
+
+		$again = Reports\parse_dates_for_range( 'this_month' );
+
+		$this->assertSame( 'UTC', $again['start']->format( 'T' ) );
+	}
+
+	/**
 	 * Strips the seconds from start and end datetime strings to guard against slow tests.
 	 *
 	 * @param array $dates Start/end dates array.

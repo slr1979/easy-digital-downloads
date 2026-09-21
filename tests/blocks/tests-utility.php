@@ -34,6 +34,7 @@ class Utility extends EDD_UnitTestCase {
 	public function tearDown(): void {
 		add_action( 'edd_checkout_form_top', 'edd_show_payment_icons' );
 		add_action( 'edd_checkout_form_top', 'edd_discount_field', -1 );
+		unset( $_GET['edd_blocks_is_block_editor'] );
 		parent::tearDown();
 	}
 
@@ -109,5 +110,63 @@ class Utility extends EDD_UnitTestCase {
 		$output = ob_get_clean();
 
 		$this->assertStringContainsString( 'edd-blocks__user-details', $output );
+	}
+
+	/**
+	 * A Subscriber's own request parameter is not a capability. With no capability
+	 * argument passed, the default now requires one, so the raw value can no
+	 * longer be handed back unexamined.
+	 */
+	public function test_is_block_editor_refuses_a_subscriber_without_capability() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		wp_set_current_user( $subscriber_id );
+
+		$_GET['edd_blocks_is_block_editor'] = '1';
+
+		$this->assertFalse( (bool) Block_Utility::is_block_editor() );
+	}
+
+	/**
+	 * The block-context branch yields a boolean rather than the $_GET string, but
+	 * it must still run the capability check, not return before it.
+	 */
+	public function test_is_block_editor_applies_capability_on_the_block_context_branch() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		wp_set_current_user( $subscriber_id );
+
+		$block          = new \stdClass();
+		$block->context = array( 'edd/previewMode' => true );
+
+		$this->assertFalse( (bool) Block_Utility::is_block_editor( 'edit_posts', $block ) );
+	}
+
+	/**
+	 * The deprecated wrapper delegates without a capability argument, so its own
+	 * default has to match the method's or the back-compat path is always false.
+	 */
+	public function test_deprecated_is_block_editor_allows_a_privileged_preview() {
+		$editor_id = self::factory()->user->create( array( 'role' => 'editor' ) );
+		wp_set_current_user( $editor_id );
+
+		// Assert the fixture: an Editor holds the capability the new default requires.
+		$this->assertTrue( current_user_can( 'edit_posts' ) );
+
+		$_GET['edd_blocks_is_block_editor'] = md5( get_userdata( $editor_id )->user_email );
+
+		$this->assertTrue( \EDD\Blocks\Functions\is_block_editor() );
+	}
+
+	/**
+	 * The deprecated wrapper is gated too: the request parameter is not enough.
+	 */
+	public function test_deprecated_is_block_editor_refuses_a_subscriber() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		wp_set_current_user( $subscriber_id );
+
+		$this->assertFalse( current_user_can( 'edit_posts' ) );
+
+		$_GET['edd_blocks_is_block_editor'] = md5( get_userdata( $subscriber_id )->user_email );
+
+		$this->assertFalse( \EDD\Blocks\Functions\is_block_editor() );
 	}
 }

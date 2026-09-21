@@ -41,10 +41,10 @@ show_help() {
   printf -- '-h, --help\t\tShow this help.\n';
   echo "";
   echo "Matrix list guide:";
-  echo "  compat  6-cell set (scope: compat) — each cell runs @compat specs only.";
+  echo "  compat  7-cell set (scope: compat) — each cell runs @compat specs only.";
   echo "          Covers WP 6.8/latest x Elementor 3.35.9/latest, plus one latest/none cell (PHP 8.2 throughout).";
-  echo "  full    Same 6-cell set (scope: all) — each cell runs the whole suite. This is the default list.";
-  echo "  edd:lite cells run @lite-scoped specs only (never the Pro suite), on a real Lite boot.";
+  echo "  full    Same 7-cell set (scope: all) — each cell runs the whole suite. This is the default list.";
+  echo "  edd:lite cells run @lite-scoped specs only (never the Pro suite), with edd_is_pro filtered false.";
   echo "  EDD_E2E_LITE_MODE: empty/unset = off; ANY non-empty value = on.";
   echo "  A cell that executes 0 tests is reported FAIL (not PASS) by the zero-test guard.";
   echo "";

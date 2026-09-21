@@ -2664,11 +2664,14 @@ class Tests_Checkout_Form_Layer_Runtime extends EDD_UnitTestCase {
 				),
 			);
 
-		// The page lookup reads nothing but Plugin::$instance->documents->get().
 		$plugin                                   = $this->make_elementor_plugin_double();
 		$plugin->documents                        = new FakeElementorDocuments();
 		$plugin->documents->documents[ $post_id ] = new FakeElementorDocument( $elements );
 		\Elementor\Plugin::$instance              = $plugin;
+
+		// A page built with Elementor always carries its tree in _elementor_data, and the widget
+		// lookup tests that raw string before it decodes anything.
+		update_post_meta( $post_id, '_elementor_data', wp_slash( wp_json_encode( $elements ) ) );
 
 		$_REQUEST['elementor-preview'] = (string) $post_id;
 

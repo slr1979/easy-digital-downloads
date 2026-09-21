@@ -16,10 +16,27 @@ class Complete extends Helpers\Process_Download {
 	 *
 	 */
 	public function test_order_with_item_should_return_true() {
-		// Not specifying price ID
+		// A fixed-price product has no tier, so a null price ID is exactly what its own
+		// order item carries.
+		$download = Helpers\EDD_Helper_Download::create_simple_download();
+		$order    = parent::edd()->order->create_and_get( array( 'status' => 'complete' ) );
+
+		edd_add_order_item(
+			array(
+				'order_id'     => $order->id,
+				'product_id'   => $download->ID,
+				'product_name' => $download->post_title,
+				'status'       => 'complete',
+				'amount'       => 20,
+				'subtotal'     => 20,
+				'total'        => 20,
+				'quantity'     => 1,
+			)
+		);
+
 		$this->assertTrue( edd_order_grants_access_to_download_files( array(
-			'order_id'   => self::$order->id,
-			'product_id' => self::$order->items[0]->product_id
+			'order_id'   => $order->id,
+			'product_id' => $download->ID,
 		) ) );
 	}
 
@@ -32,12 +49,43 @@ class Complete extends Helpers\Process_Download {
 		) ) );
 	}
 
-	public function test_order_with_item_null_price_id_should_return_true() {
-		// Not specifying price ID
-		$this->assertTrue( edd_order_grants_access_to_download_files( array(
+	public function test_order_with_variable_price_item_and_no_price_id_should_return_false() {
+		$this->assertFalse( edd_order_grants_access_to_download_files( array(
 			'order_id'   => self::$order->id,
-			'product_id' => self::$order->items[0]->product_id,
+			'product_id' => self::$variable_download->ID,
 			'price_id'   => null,
+		) ) );
+	}
+
+	/**
+	 * A variable-priced product whose own order item carries no price ID still grants access.
+	 * A fixed-price purchase later made variable, or a pre-3.0 migrated order, produces exactly
+	 * this shape.
+	 */
+	public function test_order_with_variable_price_item_and_null_own_price_id_should_return_true() {
+		$order = parent::edd()->order->create_and_get( array( 'status' => 'complete' ) );
+
+		edd_add_order_item(
+			array(
+				'order_id'     => $order->id,
+				'product_id'   => self::$variable_download->ID,
+				'product_name' => self::$variable_download->post_title,
+				'status'       => 'complete',
+				'amount'       => 20,
+				'subtotal'     => 20,
+				'total'        => 20,
+				'quantity'     => 1,
+			)
+		);
+
+		// Assert the fixture: the order item's own price ID is actually null, not defaulted
+		// to a tier.
+		$order = edd_get_order( $order->id );
+		$this->assertNull( $order->items[0]->price_id );
+
+		$this->assertTrue( edd_order_grants_access_to_download_files( array(
+			'order_id'   => $order->id,
+			'product_id' => self::$variable_download->ID,
 		) ) );
 	}
 

@@ -448,6 +448,173 @@ class Colors extends EDD_UnitTestCase {
 	}
 
 	/**
+	 * The button color reaches inline CSS and a localized script, so only a hex
+	 * color is usable there.
+	 */
+	public function test_a_button_color_that_is_not_a_hex_color_is_not_used() {
+		edd_update_option( 'button_colors', array( 'background' => 'red;} body{display:none' ) );
+
+		$stored = edd_get_option( 'button_colors' );
+		$this->assertSame( 'red;} body{display:none', $stored['background'], 'Fixture: the value must reach the option unchanged.' );
+
+		$colors = Utility::get_button_colors();
+
+		$this->assertSame( $colors['buttonColor'], sanitize_hex_color( $colors['buttonColor'] ) );
+		$this->assertStringNotContainsString( 'display:none', $colors['buttonColor'] );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * A color is a single value, so a stored list is not used.
+	 */
+	public function test_a_button_color_stored_as_a_list_is_not_used() {
+		edd_update_option( 'button_colors', array( 'background' => array( '#ff0000' ) ) );
+
+		$stored = edd_get_option( 'button_colors' );
+		$this->assertIsArray( $stored['background'], 'Fixture: the stored color must be a list.' );
+
+		$colors = Utility::get_button_colors();
+
+		$this->assertSame( $colors['buttonColor'], sanitize_hex_color( $colors['buttonColor'] ) );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * A stored hex color is the one used.
+	 */
+	public function test_a_hex_button_color_is_used() {
+		edd_update_option( 'button_colors', array( 'background' => '#336699' ) );
+
+		$colors = Utility::get_button_colors();
+
+		$this->assertSame( '#336699', $colors['buttonColor'] );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * A stored color that is not a hex color reads as unset, since every reader
+	 * prints it into CSS, a localized script, or a settings field.
+	 */
+	public function test_a_stored_color_that_is_not_a_hex_color_reads_as_unset() {
+		edd_update_option( 'button_colors', array( 'background' => 'red;} body{display:none' ) );
+
+		$this->assertSame( array( 'background' => '', 'text' => '' ), Utility::get_stored_button_colors() );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * A color is a single value, so a stored list reads as unset.
+	 */
+	public function test_a_stored_color_that_is_a_list_reads_as_unset() {
+		edd_update_option( 'button_colors', array( 'text' => array( '#ffffff' ) ) );
+
+		$stored = edd_get_option( 'button_colors' );
+		$this->assertIsArray( $stored['text'], 'Fixture: the stored color must be a list.' );
+
+		$this->assertSame( array( 'background' => '', 'text' => '' ), Utility::get_stored_button_colors() );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	public function test_a_stored_hex_color_reads_back() {
+		edd_update_option(
+			'button_colors',
+			array(
+				'background' => '#336699',
+				'text'       => '#fff',
+			)
+		);
+
+		$this->assertSame( array( 'background' => '#336699', 'text' => '#fff' ), Utility::get_stored_button_colors() );
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * Both keys are always present, so a reader never has to test for one.
+	 */
+	public function test_a_color_that_is_not_stored_reads_as_an_empty_string() {
+		edd_delete_option( 'button_colors' );
+		$this->assertEmpty( edd_get_option( 'button_colors' ), 'Fixture: nothing may be stored under the key.' );
+
+		$this->assertSame( array( 'background' => '', 'text' => '' ), Utility::get_stored_button_colors() );
+	}
+
+	/**
+	 * A block renders a color for each key, so a color that is not stored falls
+	 * back to the default.
+	 */
+	public function test_a_block_button_color_that_is_not_stored_falls_back_to_the_default() {
+		edd_delete_option( 'button_colors' );
+		$this->assertEmpty( edd_get_option( 'button_colors' ), 'Fixture: nothing may be stored under the key.' );
+
+		$this->assertSame(
+			array(
+				'background' => '#428bca',
+				'text'       => '#ffffff',
+			),
+			Utility::get_block_button_colors()
+		);
+	}
+
+	/**
+	 * The fallback is per color, so a stored one is kept while the other defaults.
+	 */
+	public function test_a_stored_block_button_color_is_kept_while_the_other_falls_back() {
+		edd_update_option( 'button_colors', array( 'background' => '#336699' ) );
+		$this->assertSame( '', Utility::get_stored_button_colors()['text'], 'Fixture: the text color must not be stored, or there is no fallback to read.' );
+
+		$this->assertSame(
+			array(
+				'background' => '#336699',
+				'text'       => '#ffffff',
+			),
+			Utility::get_block_button_colors()
+		);
+
+		edd_delete_option( 'button_colors' );
+	}
+
+	/**
+	 * @dataProvider allowed_css_function_values
+	 */
+	public function test_css_value_keeps_a_value_written_with_an_allowed_function( $value ) {
+		$this->assertSame( $value, Utility::css_value( $value ) );
+	}
+
+	public function allowed_css_function_values() {
+		return array(
+			'light_dark'    => array( 'light-dark(#ffffff, #000000)' ),
+			'env'           => array( 'env(safe-area-inset-top, 8px)' ),
+			'rgb'           => array( 'rgb(0 0 0 / 50%)' ),
+			'var'           => array( 'var(--wp--preset--color--primary)' ),
+			'calc'          => array( 'calc(1px + 2px)' ),
+			'nested_in_max' => array( 'max(env(safe-area-inset-left), 4px)' ),
+		);
+	}
+
+	/**
+	 * @dataProvider refused_css_values
+	 */
+	public function test_css_value_drops_a_value_written_with_a_function_off_the_list( $value ) {
+		$this->assertSame( '', Utility::css_value( $value ) );
+	}
+
+	public function refused_css_values() {
+		return array(
+			'url'             => array( 'url(https://example.com/a.png)' ),
+			'attr'            => array( 'attr(data-color)' ),
+			'image_set'       => array( 'image-set("a.png" 1x)' ),
+			'nested_off_list' => array( 'light-dark(url(a.png), #000)' ),
+			'rule_terminator' => array( '#ffffff;}' ),
+		);
+	}
+
+	/**
 	 * Helper method to invoke protected methods for testing.
 	 *
 	 * @since 3.5.3

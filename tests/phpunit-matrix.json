@@ -3,7 +3,6 @@
     "cells": [
       { "php": "8.0", "wp": "6.7", "ms": 0 },
       { "php": "8.4", "wp": "latest", "ms": 0 },
-      { "php": "8.2", "wp": "latest", "ms": 0 },
       { "php": "8.3", "wp": "latest", "ms": 1 }
     ]
   },
@@ -11,14 +10,14 @@
     "cells": [
       { "php": "8.0", "wp": "6.7", "ms": 0 },
       { "php": "8.2", "wp": "6.7", "ms": 0 },
-      { "php": "8.2", "wp": "latest", "ms": 0 },
       { "php": "8.4", "wp": "latest", "ms": 0 },
       { "php": "8.3", "wp": "latest", "ms": 1 }
     ]
   },
   "coverage": {
+    "note": "Exactly one cell. The coverage job's SonarCloud step submits once per cell, so a second cell would double-submit; making it shard-aware is a separate change.",
     "cells": [
-      { "php": "8.0", "wp": "6.7", "ms": 0 }
+      { "php": "8.2", "wp": "latest", "ms": 0 }
     ]
   }
 }

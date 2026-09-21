@@ -1,10 +1,24 @@
 <?php
+/**
+ * Tests for downloads search.
+ *
+ * @package     EDD\Tests\Downloads
+ * @copyright   Copyright (c) 2026, Sandhills Development, LLC
+ * @license     https://opensource.org/licenses/gpl-2.0.php GNU Public License
+ * @since       3.7.1
+ */
 
 namespace EDD\Tests\Downloads;
 
 use EDD\Tests\Helpers\EDD_Helper_Download;
 use EDD\Tests\PHPUnit\EDD_UnitTestCase;
 
+/**
+ * Search tests.
+ *
+ * @since 3.7.1
+ * @group edd_downloads
+ */
 class Search extends EDD_UnitTestCase {
 
 	public static function setUpBeforeClass(): void {
@@ -24,12 +38,37 @@ class Search extends EDD_UnitTestCase {
 		parent::tearDownAfterClass();
 	}
 
+	public function setUp(): void {
+		parent::setUp();
+
+		// EDD's capabilities are added to the roles after the role objects were built.
+		wp_roles()->for_site();
+	}
+
 	public function tearDown(): void {
 		parent::tearDown();
 		unset( $_GET['s'] );
 		unset( $_GET['variations'] );
 		unset( $_GET['variations_only'] );
 		unset( $_GET['exclusions'] );
+		unset( $_GET['no_bundles'] );
+		unset( $_GET['current_id'] );
+	}
+
+	/**
+	 * The capabilities the rest of this file's cases rest on.
+	 */
+	public function test_the_capabilities_these_cases_rest_on() {
+		$vendor = self::factory()->user->create( array( 'role' => 'shop_vendor' ) );
+		wp_set_current_user( $vendor );
+
+		$this->assertTrue( current_user_can( 'edit_products' ), 'A vendor has to be able to edit products.' );
+		$this->assertFalse( current_user_can( 'edit_others_products' ), 'A vendor must not be able to edit other authors.' );
+
+		$manager = self::factory()->user->create( array( 'role' => 'shop_manager' ) );
+		wp_set_current_user( $manager );
+
+		$this->assertTrue( current_user_can( 'edit_others_products' ), 'A manager has to be able to edit other authors.' );
 	}
 
 	public function test_search_empty_string() {
@@ -743,5 +782,370 @@ class Search extends EDD_UnitTestCase {
 			( $fifth_id === $partial_1_id || $fifth_id === $partial_2_id ),
 			'Fifth result should be a partial match'
 		);
+	}
+
+	/**
+	 * Another author's draft product is not in the results.
+	 */
+	public function test_search_omits_another_authors_draft() {
+		$draft = $this->create_product( 'Zephyr Records', 'draft', $this->create_owner() );
+
+		$this->act_as_vendor();
+
+		$this->assertNotContains( $draft, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * Another author's private product is not in the results.
+	 */
+	public function test_search_omits_another_authors_private_product() {
+		$private = $this->create_product( 'Zephyr Ledger', 'private', $this->create_owner() );
+
+		$this->act_as_vendor();
+
+		$this->assertNotContains( $private, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * Another author's price tier names are not in the results.
+	 */
+	public function test_search_omits_another_authors_price_tiers() {
+		$draft = $this->create_product( 'Zephyr Tiers', 'draft', $this->create_owner() );
+		$this->add_prices( $draft, array( 'Insider Early Bird', 'Enterprise NDA Tier' ) );
+
+		$this->act_as_vendor();
+
+		$_GET['variations'] = true;
+		$names              = wp_list_pluck( $this->search_for( 'Zephyr' ), 'name' );
+
+		$this->assertEmpty( preg_grep( '/Enterprise NDA Tier/', $names ) );
+	}
+
+	/**
+	 * The author's own draft product is in the results.
+	 */
+	public function test_search_includes_the_authors_own_draft() {
+		$vendor = $this->act_as_vendor();
+		$draft  = $this->create_product( 'Zephyr Workbench', 'draft', $vendor );
+
+		$this->assertContains( $draft, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * A published product is in the results whoever authored it.
+	 */
+	public function test_search_includes_another_authors_published_product() {
+		$published = $this->create_product( 'Zephyr Almanac', 'publish', $this->create_owner() );
+
+		$this->act_as_vendor();
+
+		$this->assertContains( $published, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * Someone who can edit others' products still sees their drafts.
+	 */
+	public function test_search_includes_another_authors_draft_for_a_manager() {
+		$draft = $this->create_product( 'Zephyr Records', 'draft', $this->create_owner() );
+
+		$this->act_as_manager();
+
+		$this->assertContains( $draft, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * A missing post status is not treated as readable.
+	 */
+	public function test_filter_by_readability_does_not_default_an_empty_status_to_readable() {
+		$draft = $this->create_product( 'Zephyr Ledger', 'draft', $this->create_owner() );
+		$item  = get_post( $draft );
+		$item->post_status = '';
+
+		$this->act_as_vendor();
+
+		$this->assertEmpty( \EDD\Downloads\Search::filter_by_readability( array( $item ) ) );
+	}
+
+	/**
+	 * An item which is not a post does not become one by being normalized.
+	 *
+	 * get_post() gives a plain object WP_Post's own property defaults, and those describe a
+	 * published post, so the readability check has to establish the type before the status.
+	 */
+	public function test_filter_by_readability_refuses_an_item_that_is_not_a_post() {
+		$draft = $this->create_product( 'Zephyr Fragment', 'draft', $this->create_owner() );
+
+		$this->act_as_vendor();
+
+		// The shape a raw query gives back: the columns that were selected, and nothing else.
+		$item = (object) array(
+			'ID'         => $draft,
+			'post_title' => 'Zephyr Fragment',
+		);
+
+		$this->assertTrue(
+			is_post_publicly_viewable( clone $item ),
+			'Fixture: WP_Post\'s defaults have to be what makes this case worth refusing.'
+		);
+		$this->assertEmpty( \EDD\Downloads\Search::filter_by_readability( array( $item ) ) );
+	}
+
+	/**
+	 * An unpublished item with no identifier is not read against the global post.
+	 */
+	public function test_filter_by_readability_refuses_an_item_without_an_identifier() {
+		$readable = $this->create_product( 'Zephyr Ambient', 'publish', $this->create_owner() );
+
+		$this->act_as_vendor();
+
+		$GLOBALS['post'] = get_post( $readable );
+
+		$items = \EDD\Downloads\Search::filter_by_readability(
+			array( new \WP_Post( (object) array( 'post_status' => 'draft' ) ) )
+		);
+
+		unset( $GLOBALS['post'] );
+
+		$this->assertEmpty( $items );
+	}
+
+	/**
+	 * Editing others' products does not, by itself, grant reading their private ones.
+	 */
+	public function test_filter_by_readability_requires_read_private_products_too() {
+		$role = add_role( 'boundary_custom_role', 'Boundary Custom Role', array( 'read' => true ) );
+		$role->add_cap( 'edit_products' );
+		$role->add_cap( 'edit_others_products' );
+
+		$private = $this->create_product( 'Zephyr Custom', 'private', $this->create_owner() );
+		$item    = get_post( $private );
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'boundary_custom_role' ) ) );
+
+		$this->assertTrue( current_user_can( 'edit_others_products' ), 'Fixture: the role must have this.' );
+		$this->assertFalse( current_user_can( 'read_private_products' ), 'Fixture: the role must not have this.' );
+
+		$this->assertEmpty( \EDD\Downloads\Search::filter_by_readability( array( $item ) ) );
+
+		remove_role( 'boundary_custom_role' );
+	}
+
+	/**
+	 * One caller's results are not handed to the next caller.
+	 */
+	public function test_search_does_not_reuse_results_across_callers() {
+		$draft = $this->create_product( 'Zephyr Records', 'draft', $this->create_owner() );
+
+		$this->act_as_manager();
+		$this->assertContains( $draft, $this->result_ids( 'Zephyr' ), 'The manager has to see it first.' );
+
+		wp_set_current_user( 0 );
+
+		$this->assertNotContains( $draft, $this->result_ids( 'Zephyr' ) );
+	}
+
+	/**
+	 * The same term, for the same caller, does not replay a differently shaped search.
+	 */
+	public function test_search_does_not_reuse_results_across_a_different_shape() {
+		$download_id = self::factory()->post->create(
+			array(
+				'post_type'  => 'download',
+				'post_title' => 'Zephyr Suite',
+			)
+		);
+		$this->add_prices( $download_id, array( 'Basic', 'Pro' ) );
+
+		$plain_ids = $this->result_ids( 'Zephyr' );
+		$this->assertNotContains( $download_id . '_0', $plain_ids, 'Fixture: the plain search must not already carry a variation row.' );
+
+		$_GET['variations'] = true;
+		$variation_ids       = $this->result_ids( 'Zephyr' );
+
+		$this->assertContains( $download_id . '_0', $variation_ids, 'The variations-enabled search must not be handed the plain search\'s cached shape.' );
+	}
+
+	/**
+	 * Different request shapes for the same caller and term still share one transient.
+	 *
+	 * This endpoint is open to anonymous requests, so the shape can't be part of the
+	 * transient's own name without letting a caller mint one per combination it sends.
+	 */
+	public function test_search_uses_one_transient_regardless_of_shape() {
+		$this->create_product( 'Zephyr Widget', 'publish', $this->create_owner() );
+
+		$this->search_for( 'Zephyr' );
+
+		$_GET['exclusions'] = '99999999';
+		$this->search_for( 'Zephyr' );
+
+		global $wpdb;
+		$count = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE %s",
+				$wpdb->esc_like( '_transient_edd_download_search_' ) . '%'
+			)
+		);
+
+		$this->assertEquals( 1, $count );
+	}
+
+	/**
+	 * Two spellings of the same flag are one shape, not two.
+	 */
+	public function test_search_treats_equivalent_flag_spellings_as_one_shape() {
+		wp_set_current_user( 0 );
+		$this->create_product( 'Zephyr Bundleless', 'publish', $this->create_owner() );
+
+		$_GET['no_bundles'] = 'true';
+		$this->search_for( 'Zephyr' );
+		$spelled_out = $this->stored_shape();
+
+		$_GET['no_bundles'] = '1';
+		$this->search_for( 'Zephyr' );
+
+		$this->assertNotNull( $spelled_out, 'Fixture: the first search has to have stored a shape.' );
+		$this->assertSame( $spelled_out, $this->stored_shape() );
+	}
+
+	/**
+	 * The stored shape does not carry the request value through unread.
+	 */
+	public function test_search_stores_the_shape_as_booleans() {
+		wp_set_current_user( 0 );
+		$this->create_product( 'Zephyr Boolean', 'publish', $this->create_owner() );
+
+		$_GET['no_bundles'] = 'true';
+		$this->search_for( 'Zephyr' );
+
+		$shape = $this->stored_shape();
+
+		$this->assertNotNull( $shape, 'Fixture: the search has to have stored a shape.' );
+		$this->assertTrue( $shape['no_bundles'] );
+		$this->assertFalse( $shape['variations'] );
+	}
+
+	/**
+	 * Reads the shape back out of the stored search.
+	 *
+	 * @return array|null
+	 */
+	private function stored_shape() {
+		global $wpdb;
+
+		$stored = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name LIKE %s LIMIT 1",
+				$wpdb->esc_like( '_transient_edd_download_search_' ) . '%'
+			)
+		);
+
+		$search = maybe_unserialize( $stored );
+
+		return isset( $search['shape'] ) ? $search['shape'] : null;
+	}
+
+	/**
+	 * A search term of "0" is not treated as an empty search.
+	 */
+	public function test_search_for_the_term_zero_is_not_treated_as_empty() {
+		$download_id = $this->create_product( '0', 'publish', $this->create_owner() );
+
+		$this->assertContains( $download_id, $this->result_ids( '0' ) );
+	}
+
+	/**
+	 * Runs a search and returns the result identifiers.
+	 *
+	 * @param string $term The search term.
+	 * @return array
+	 */
+	private function result_ids( $term ) {
+		return wp_list_pluck( $this->search_for( $term ), 'id' );
+	}
+
+	/**
+	 * Runs a search.
+	 *
+	 * @param string $term The search term.
+	 * @return array
+	 */
+	private function search_for( $term ) {
+		$_GET['s'] = $term;
+		$search    = new \EDD\Downloads\Search();
+
+		return $search->search();
+	}
+
+	/**
+	 * Creates a product with the given status and owner.
+	 *
+	 * @param string $title  The product title.
+	 * @param string $status The post status.
+	 * @param int    $author The owner.
+	 * @return int
+	 */
+	private function create_product( $title, $status, $author ) {
+		return self::factory()->post->create(
+			array(
+				'post_type'   => 'download',
+				'post_title'  => $title,
+				'post_status' => $status,
+				'post_author' => $author,
+			)
+		);
+	}
+
+	/**
+	 * Gives a product variable prices.
+	 *
+	 * @param int   $download_id The product.
+	 * @param array $names       The tier names.
+	 */
+	private function add_prices( $download_id, $names ) {
+		$prices = array();
+		foreach ( $names as $name ) {
+			$prices[] = array(
+				'name'   => $name,
+				'amount' => 10,
+			);
+		}
+
+		update_post_meta( $download_id, 'edd_price', '0.00' );
+		update_post_meta( $download_id, '_variable_pricing', 1 );
+		update_post_meta( $download_id, 'edd_variable_prices', $prices );
+	}
+
+	/**
+	 * Creates a user who owns products but is not the actor.
+	 *
+	 * @return int
+	 */
+	private function create_owner() {
+		return self::factory()->user->create( array( 'role' => 'administrator' ) );
+	}
+
+	/**
+	 * Becomes a shop vendor.
+	 *
+	 * @return int
+	 */
+	private function act_as_vendor() {
+		$vendor = self::factory()->user->create( array( 'role' => 'shop_vendor' ) );
+		wp_set_current_user( $vendor );
+
+		return $vendor;
+	}
+
+	/**
+	 * Becomes a shop manager.
+	 *
+	 * @return int
+	 */
+	private function act_as_manager() {
+		$manager = self::factory()->user->create( array( 'role' => 'shop_manager' ) );
+		wp_set_current_user( $manager );
+
+		return $manager;
 	}
 }

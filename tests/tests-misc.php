@@ -24,6 +24,13 @@ class Misc extends EDD_UnitTestCase {
 		self::$download = Helpers\EDD_Helper_Download::create_simple_download();
 	}
 
+	public function tearDown(): void {
+		wp_set_current_user( 0 );
+		EDD()->session->set( 'edd_purchase', null );
+
+		parent::tearDown();
+	}
+
 	public function test_test_mode() {
 		$this->assertFalse( edd_is_test_mode() );
 	}
@@ -582,6 +589,113 @@ class Misc extends EDD_UnitTestCase {
 
 		do_action( 'action_scheduler_after_execute', 1 );
 		$this->assertFalse( edd_doing_cron() );
+	}
+
+	public function test_receipt_refused_for_pending_verification_by_user_id() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		$user_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		edd_update_order( $order->id, array( 'user_id' => $user_id ) );
+		edd_set_user_to_pending( $user_id );
+
+		wp_set_current_user( $user_id );
+
+		$this->assertFalse( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	public function test_receipt_refused_for_pending_verification_by_email_match() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		$user = self::factory()->user->create_and_get( array(
+			'role'       => 'subscriber',
+			'user_email' => $order->email,
+		) );
+		edd_set_user_to_pending( $user->ID );
+
+		wp_set_current_user( $user->ID );
+
+		$this->assertFalse( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	public function test_receipt_granted_once_verification_clears() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		$user_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		edd_update_order( $order->id, array( 'user_id' => $user_id ) );
+		edd_set_user_to_pending( $user_id );
+
+		wp_set_current_user( $user_id );
+		$this->assertFalse( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+
+		edd_set_user_to_verified( $user_id );
+		$this->assertTrue( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	public function test_sensitive_data_capability_reads_receipt_while_pending() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		// A subscriber holding only this one capability, so the case exercises the
+		// capability check itself rather than the unrelated edit_shop_payments grant
+		// every built-in role that carries view_shop_sensitive_data also holds.
+		$user = self::factory()->user->create_and_get( array( 'role' => 'subscriber' ) );
+		$user->add_cap( 'view_shop_sensitive_data' );
+		edd_update_order( $order->id, array( 'user_id' => $user->ID ) );
+		edd_set_user_to_pending( $user->ID );
+
+		wp_set_current_user( $user->ID );
+
+		$this->assertTrue( current_user_can( 'view_shop_sensitive_data' ) );
+		$this->assertFalse( current_user_can( 'edit_shop_payments' ) );
+
+		$this->assertTrue( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	public function test_logged_out_guest_session_receipt_access_unaffected() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		EDD()->session->set( 'edd_purchase', array( 'purchase_key' => $order->payment_key ) );
+
+		wp_set_current_user( 0 );
+
+		$this->assertTrue( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	public function test_receipt_granted_for_pending_verification_with_matching_session() {
+		$payment_id = Helpers\EDD_Helper_Payment::create_simple_guest_payment();
+		$order      = edd_get_order( $payment_id );
+
+		$user_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		edd_update_order( $order->id, array( 'user_id' => $user_id ) );
+		edd_set_user_to_pending( $user_id );
+
+		EDD()->session->set( 'edd_purchase', array( 'purchase_key' => $order->payment_key ) );
+		wp_set_current_user( $user_id );
+
+		$this->assertTrue( edd_can_view_receipt( edd_get_order( $order->id ) ) );
+	}
+
+	/**
+	 * A session is proof of the order it was issued for, not a blanket pass by email match.
+	 */
+	public function test_receipt_refused_for_pending_verification_with_session_for_another_order() {
+		$session_order = edd_get_order( Helpers\EDD_Helper_Payment::create_simple_guest_payment() );
+		$other_order   = edd_get_order( Helpers\EDD_Helper_Payment::create_simple_guest_payment() );
+
+		$user = self::factory()->user->create_and_get( array(
+			'role'       => 'subscriber',
+			'user_email' => $other_order->email,
+		) );
+		edd_set_user_to_pending( $user->ID );
+
+		EDD()->session->set( 'edd_purchase', array( 'purchase_key' => $session_order->payment_key ) );
+		wp_set_current_user( $user->ID );
+
+		$this->assertFalse( edd_can_view_receipt( edd_get_order( $other_order->id ) ) );
 	}
 
 	private function write_test_file( $full_file_path ) {

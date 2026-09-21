@@ -177,6 +177,148 @@ class Callbacks extends EDD_UnitTestCase {
 		$this->assertStringContainsString( 'readonly', $output );
 	}
 
+	/**
+	 * The three ordering and region callbacks build an attribute by concatenation,
+	 * so each option value has to be escaped for that context.
+	 *
+	 */
+	public function test_gateways_callback_escapes_the_order_value() {
+		$output = $this->render_with_option(
+			'gateways_order',
+			'manual" /><img src=x onerror=alert(1)><input x="',
+			function () {
+				return edd_gateways_callback(
+					$this->parse_args(
+						array(
+							// Empty so the assertion rests on the hidden ordering input,
+							// which renders ahead of the gateway list.
+							'id'      => 'gateways',
+							'options' => array(),
+						)
+					)
+				);
+			}
+		);
+
+		$this->assertStringNotContainsString( '<img src=x', $output );
+		$this->assertStringContainsString( '&lt;img', $output );
+	}
+
+	public function test_payment_icons_callback_escapes_the_order_value() {
+		$output = $this->render_with_option(
+			'payment_icons_order',
+			'visa" /><img src=x onerror=alert(1)><input y="',
+			function () {
+				return edd_payment_icons_callback(
+					$this->parse_args(
+						array(
+							'id'      => 'accepted_cards',
+							'options' => array(),
+						)
+					)
+				);
+			}
+		);
+
+		$this->assertStringNotContainsString( '<img src=x', $output );
+		$this->assertStringContainsString( '&lt;img', $output );
+	}
+
+	/**
+	 * The region field only prints a stored value when the configured country has
+	 * no predefined regions; with a country that has them it renders a select
+	 * instead, which is asserted here as a control.
+	 *
+	 */
+	public function test_shop_states_callback_escapes_the_region_value() {
+		global $edd_options;
+
+		$original_country = isset( $edd_options['base_country'] ) ? $edd_options['base_country'] : null;
+
+		$unsanitized_html = 'Kabul" /><img src=x onerror=alert(1)><input z="';
+
+		$edd_options['base_country'] = 'SG';
+		$this->assertEmpty( edd_get_shop_states( 'SG' ), 'SG must have no predefined regions for this test to reach the text branch.' );
+
+		$output = $this->render_with_option(
+			'base_state',
+			$unsanitized_html,
+			function () {
+				return edd_shop_states_callback(
+					$this->parse_args(
+						array(
+							'id'          => 'base_state',
+							'field_class' => 'edd_regions_filter',
+						)
+					)
+				);
+			}
+		);
+
+		$this->assertStringNotContainsString( '<img src=x', $output );
+		$this->assertStringContainsString( '&lt;img', $output );
+
+		// Control: a country with regions renders a select and never prints the stored value.
+		$edd_options['base_country'] = 'US';
+		$this->assertNotEmpty( edd_get_shop_states( 'US' ) );
+
+		$control = $this->render_with_option(
+			'base_state',
+			$unsanitized_html,
+			function () {
+				return edd_shop_states_callback(
+					$this->parse_args(
+						array(
+							'id'          => 'base_state',
+							'field_class' => 'edd_regions_filter',
+						)
+					)
+				);
+			}
+		);
+
+		$this->assertStringNotContainsString( 'onerror', $control );
+
+		if ( is_null( $original_country ) ) {
+			unset( $edd_options['base_country'] );
+		} else {
+			$edd_options['base_country'] = $original_country;
+		}
+	}
+
+	/**
+	 * Renders a callback with one option seeded directly on the settings global.
+	 *
+	 * The value is set on the global rather than through edd_update_option() so the
+	 * renderer is measured on its own: a sanitizer on the save path would otherwise
+	 * satisfy the assertion without the escaping being present.
+	 *
+	 * @param string   $setting  Setting key to seed.
+	 * @param string   $value    Value to seed it with.
+	 * @param callable $callback Renders the field, echoing or returning its markup.
+	 * @return string The rendered markup.
+	 */
+	private function render_with_option( $setting, $value, $callback ) {
+		global $edd_options;
+
+		$original = isset( $edd_options[ $setting ] ) ? $edd_options[ $setting ] : null;
+
+		$edd_options[ $setting ] = $value;
+		$this->assertSame( $value, edd_get_option( $setting ), 'The value under test was not readable before rendering.' );
+
+		ob_start();
+		$returned = $callback();
+		$echoed   = ob_get_clean();
+
+		if ( is_null( $original ) ) {
+			unset( $edd_options[ $setting ] );
+		} else {
+			$edd_options[ $setting ] = $original;
+		}
+
+		return is_string( $returned ) && '' !== $returned ? $returned : $echoed;
+	}
+
 	private function parse_args( $args ) {
 		return wp_parse_args(
 			$args,

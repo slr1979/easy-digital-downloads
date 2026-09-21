@@ -11,6 +11,10 @@ class API extends EDD_UnitTestCase {
 
 	protected static $post;
 
+	protected static $draft_id;
+
+	protected static $private_id;
+
 	/**
 	 * @var EDD_API
 	 */
@@ -104,6 +108,43 @@ class API extends EDD_UnitTestCase {
 		}
 
 		self::$post = get_post( $post_id );
+
+		self::$draft_id = self::factory()->post->create( array(
+			'post_title'   => 'Unreleased Q4 Launch',
+			'post_type'    => 'download',
+			'post_status'  => 'draft',
+			'post_excerpt' => 'Do not publish yet',
+			'post_author'  => self::$user_id,
+		) );
+
+		update_post_meta( self::$draft_id, '_variable_pricing', 1 );
+		update_post_meta( self::$draft_id, '_edd_price_options_mode', 'on' );
+		update_post_meta( self::$draft_id, 'edd_variable_prices', array_values( array(
+			array(
+				'name'   => 'Insider Early Bird',
+				'amount' => 29,
+			),
+			array(
+				'name'   => 'Enterprise NDA Tier',
+				'amount' => 1999,
+			),
+		) ) );
+
+		self::$private_id = self::factory()->post->create( array(
+			'post_title'  => 'Internal Client Bundle',
+			'post_type'   => 'download',
+			'post_status' => 'private',
+			'post_author' => self::$user_id,
+		) );
+
+		update_post_meta( self::$private_id, '_variable_pricing', 1 );
+		update_post_meta( self::$private_id, '_edd_price_options_mode', 'on' );
+		update_post_meta( self::$private_id, 'edd_variable_prices', array_values( array(
+			array(
+				'name'   => 'Client Exclusive Tier',
+				'amount' => 499,
+			),
+		) ) );
 
 		$user = get_userdata( 1 );
 
@@ -199,6 +240,11 @@ class API extends EDD_UnitTestCase {
 		EDD()->api->revoke_api_key( self::$user_id );
 
 		self::$api->flush_api_output();
+
+		// Restore the administrator for any test that modeled an unauthenticated visitor.
+		wp_set_current_user( self::$user_id );
+		self::$api->override = true;
+		self::$api->user_id  = 0;
 	}
 
 	public static function tearDownAfterClass(): void {
@@ -348,6 +394,324 @@ class API extends EDD_UnitTestCase {
 		$out = self::$api_output;
 		$this->assertArrayHasKey( 'notes', $out['products'][0] );
 		$this->assertEquals( 'Purchase Notes', $out['products'][0]['notes'] );
+	}
+
+	/**
+	 * Unauthenticated single-product lookup of a draft must not disclose it.
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0 on the
+	 * shared API instance, rather than routed through process_query().
+	 */
+	public function test_get_products_single_product_respects_post_status() {
+		self::$api->override = false;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$out = self::$api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'error', $out );
+		$this->assertArrayNotHasKey( 'products', $out );
+
+		$json = wp_json_encode( $out );
+		$this->assertStringNotContainsString( 'Unreleased Q4 Launch', $json );
+		$this->assertStringNotContainsString( 'unreleased-q4-launch', $json );
+		$this->assertStringNotContainsString( 'Do not publish yet', $json );
+		$this->assertStringNotContainsString( 'draft', $json );
+	}
+
+	/**
+	 * Unauthenticated single-product lookup of a private product must not
+	 * disclose it, including its pricing tiers.
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0.
+	 */
+	public function test_get_products_single_product_hides_private_products() {
+		self::$api->override = false;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$out = self::$api->get_products( array( 'product' => self::$private_id ) );
+
+		$this->assertArrayHasKey( 'error', $out );
+		$this->assertArrayNotHasKey( 'products', $out );
+
+		$json = wp_json_encode( $out );
+		$this->assertStringNotContainsString( 'Internal Client Bundle', $json );
+		$this->assertStringNotContainsString( 'private', $json );
+		$this->assertStringNotContainsString( 'clientexclusivetier', $json );
+	}
+
+	/**
+	 * A real but unreadable id and an id with no post at all must produce
+	 * the same "not found" wording, so the endpoint cannot be used to
+	 * confirm that a hidden product exists. The message itself is
+	 * parameterized by the id the caller already supplied (`sprintf(
+	 * 'Product %s not found!', $args['product'] )`), so the two responses
+	 * can never be literally identical strings; what must match is that
+	 * both take the same code path and wording, rather than one saying
+	 * "not found" and the other something that only a real post triggers.
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0.
+	 */
+	public function test_get_products_error_does_not_confirm_the_id() {
+		self::$api->override = false;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$no_post_id  = self::$draft_id + 100000;
+		$draft_out   = self::$api->get_products( array( 'product' => self::$draft_id ) );
+		$no_post_out = self::$api->get_products( array( 'product' => $no_post_id ) );
+
+		$this->assertArrayHasKey( 'error', $draft_out );
+		$this->assertArrayHasKey( 'error', $no_post_out );
+
+		// The queried id is echoed back into the message; normalize it out
+		// before comparing the two responses for identical wording.
+		$normalize = static function ( $message ) {
+			return preg_replace( '/\d+/', '#', $message );
+		};
+
+		$this->assertSame( $normalize( $no_post_out['error'] ), $normalize( $draft_out['error'] ) );
+	}
+
+	/**
+	 * Control: an unauthenticated caller must still be able to read a
+	 * published product. Must pass before and after the fix.
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0.
+	 */
+	public function test_get_products_single_product_serves_published_products() {
+		self::$api->override = false;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$out = self::$api->get_products( array( 'product' => self::$post->ID ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Test Download', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * Control: a caller who can read the draft (its author, an administrator)
+	 * must still get the product back. Guards the fix against blocking
+	 * legitimate authenticated reads.
+	 *
+	 * Actor modeled directly: override cleared, user_id set to the
+	 * administrator who owns the draft.
+	 */
+	public function test_get_products_single_product_serves_a_caller_with_read_rights() {
+		self::$api->override = false;
+		self::$api->user_id  = self::$user_id;
+		wp_set_current_user( self::$user_id );
+
+		$out = self::$api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Unreleased Q4 Launch', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * A key authenticated request carries no cookie session, so the gate has to evaluate
+	 * the user who owns the API key rather than the absent current user.
+	 *
+	 * Actor modeled directly: override cleared, no current user, user_id set to the
+	 * administrator who authored the draft.
+	 */
+	public function test_get_products_serves_a_key_authenticated_caller_with_no_session() {
+		self::$api->override = false;
+		self::$api->user_id  = self::$user_id;
+		wp_set_current_user( 0 );
+
+		// Fixture: only the key user leg of the gate can carry this test.
+		$this->assertTrue( user_can( self::$user_id, 'read_post', self::$draft_id ) );
+		$this->assertFalse( current_user_can( 'read_post', self::$draft_id ) );
+
+		$out = self::$api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Unreleased Q4 Launch', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * The key user leg is not a blanket allow: a key owner without read rights on the
+	 * draft still gets the "not found" response.
+	 *
+	 * Actor modeled directly: override cleared, no current user, user_id set to a
+	 * subscriber who neither authored the draft nor can edit downloads.
+	 */
+	public function test_get_products_denies_a_key_authenticated_caller_without_read_rights() {
+		$subscriber = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+
+		self::$api->override = false;
+		self::$api->user_id  = $subscriber;
+		wp_set_current_user( 0 );
+
+		// Fixture: the subscriber really cannot read the draft.
+		$this->assertFalse( user_can( $subscriber, 'read_post', self::$draft_id ) );
+
+		$out = self::$api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'error', $out );
+		$this->assertArrayNotHasKey( 'products', $out );
+		$this->assertStringNotContainsString( 'Unreleased Q4 Launch', wp_json_encode( $out ) );
+	}
+
+	/**
+	 * An internal caller that never ran request validation keeps its override, as it does
+	 * for the other capability checks in the class.
+	 *
+	 * Actor modeled directly: override left set, no current user, user_id 0.
+	 */
+	public function test_get_products_serves_an_internal_caller_with_override() {
+		self::$api->override = true;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		// Fixture: neither capability leg of the gate can carry this test.
+		$this->assertFalse( user_can( 0, 'read_post', self::$draft_id ) );
+		$this->assertFalse( current_user_can( 'read_post', self::$draft_id ) );
+
+		$out = self::$api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Unreleased Q4 Launch', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * EDD_API_V2 fully overrides get_products(), so its own copy of the gate is checked
+	 * directly for the key user leg rather than only through the base class.
+	 *
+	 * Actor modeled directly on a fresh EDD_API_V2: override cleared, no current user,
+	 * user_id set to the administrator who authored the draft.
+	 */
+	public function test_get_products_v2_serves_a_key_authenticated_caller_with_no_session() {
+		$api           = new \EDD_API_V2();
+		$api->override = false;
+		$api->user_id  = self::$user_id;
+		wp_set_current_user( 0 );
+
+		// Fixture: only the key user leg of the gate can carry this test.
+		$this->assertTrue( user_can( self::$user_id, 'read_post', self::$draft_id ) );
+		$this->assertFalse( current_user_can( 'read_post', self::$draft_id ) );
+
+		$out = $api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Unreleased Q4 Launch', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * EDD_API_V2's own copy of the gate, internal caller: a fresh instance has never
+	 * validated a request, so its override still applies.
+	 */
+	public function test_get_products_v2_serves_an_internal_caller_with_override() {
+		$api          = new \EDD_API_V2();
+		$api->user_id = 0;
+		wp_set_current_user( 0 );
+
+		// Fixture: a fresh instance is an internal caller, and neither capability leg holds.
+		$this->assertTrue( $api->override );
+		$this->assertFalse( user_can( 0, 'read_post', self::$draft_id ) );
+		$this->assertFalse( current_user_can( 'read_post', self::$draft_id ) );
+
+		$out = $api->get_products( array( 'product' => self::$draft_id ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+		$this->assertEquals( 'Unreleased Q4 Launch', $out['products'][0]['info']['title'] );
+	}
+
+	/**
+	 * Control: the collection query, unauthenticated, must only ever return
+	 * published products. Passes today only as a side effect of get_posts()
+	 * defaulting post_status to publish; this is what makes the explicit
+	 * 'post_status' => 'publish' addition safe to rely on.
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0.
+	 */
+	public function test_get_products_collection_pins_published_status() {
+		self::$api->override = false;
+		self::$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$out = self::$api->get_products();
+
+		$this->assertArrayHasKey( 'products', $out );
+
+		$ids = array();
+		foreach ( $out['products'] as $product ) {
+			$this->assertEquals( 'publish', $product['info']['status'] );
+			$ids[] = $product['info']['id'];
+		}
+
+		$this->assertNotContains( self::$draft_id, $ids );
+		$this->assertNotContains( self::$private_id, $ids );
+	}
+
+	/**
+	 * The status gate must apply through the public request path for both
+	 * shipped API versions. EDD_API_V1 inherits get_products() from the base
+	 * class untouched, but EDD_API_V2 fully overrides it with its own
+	 * single-product branch, so both loci need the fix for this to pass.
+	 *
+	 * Actor modeled via process_query(), as the class's other version tests do.
+	 */
+	public function test_get_products_status_gate_applies_to_v1_and_v2() {
+		global $wp_query;
+
+		wp_set_current_user( 0 );
+
+		foreach ( array( 'v1', 'v2' ) as $version ) {
+			$wp_query->query_vars['edd-api'] = $version . '/products';
+			$wp_query->query_vars['product'] = self::$draft_id;
+			unset( $wp_query->query_vars['key'] );
+			unset( $wp_query->query_vars['token'] );
+
+			try {
+				self::$api->process_query();
+			} catch ( \WPDieException $e ) {}
+
+			$out  = self::$api->get_output();
+			$json = wp_json_encode( $out );
+
+			// A bail before dispatch would leave an empty array, which the absence check below
+			// would satisfy without the gate ever running.
+			$this->assertArrayHasKey( 'error', $out, "Nothing was dispatched for {$version}." );
+			$this->assertStringContainsString(
+				(string) self::$draft_id,
+				$out['error'],
+				"The refusal for {$version} has to name the product, so it is the status gate answering and not authentication."
+			);
+
+			$this->assertStringNotContainsString( 'Unreleased Q4 Launch', $json, "Draft title leaked via {$version}" );
+		}
+	}
+
+	/**
+	 * Control, EDD_API_V2's own collection branch: unauthenticated, no
+	 * `product` argument, every returned status is publish. EDD_API_V2
+	 * duplicates the collection query rather than inheriting it, so this is
+	 * checked directly against that class, not just through process_query().
+	 *
+	 * Actor modeled directly: override cleared and user_id set to 0.
+	 */
+	public function test_get_products_v2_collection_pins_published_status() {
+		$api           = new \EDD_API_V2();
+		$api->override = false;
+		$api->user_id  = 0;
+		wp_set_current_user( 0 );
+
+		$out = $api->get_products( array( 'order' => 'DESC', 'orderby' => 'date' ) );
+
+		$this->assertArrayHasKey( 'products', $out );
+
+		$ids = array();
+		foreach ( $out['products'] as $product ) {
+			$this->assertEquals( 'publish', $product['info']['status'] );
+			$ids[] = $product['info']['id'];
+		}
+
+		$this->assertNotContains( self::$draft_id, $ids );
+		$this->assertNotContains( self::$private_id, $ids );
 	}
 
 	public function test_get_recent_sales() {

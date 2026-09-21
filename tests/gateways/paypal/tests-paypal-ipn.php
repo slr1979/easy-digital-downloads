@@ -40,6 +40,16 @@ class IPN extends EDD_UnitTestCase {
 	 */
 	protected $order;
 
+	/**
+	 * @var array
+	 */
+	protected $postbacks = array();
+
+	/**
+	 * @var array
+	 */
+	protected $postback_urls = array();
+
 	public static function setUpBeforeClass(): void {
 		// Set up PayPal credentials for both modes
 		// Tests will control test_mode setting individually as needed
@@ -70,6 +80,8 @@ class IPN extends EDD_UnitTestCase {
 		// Clean up globals
 		$_GET  = array();
 		$_POST = array();
+
+		edd_delete_option( 'test_mode' );
 
 		// Remove any filters we added
 		remove_all_filters( 'pre_http_request' );
@@ -349,6 +361,60 @@ class IPN extends EDD_UnitTestCase {
 		}
 
 		$this->assertTrue( $note_found, 'Expected dispute note not found' );
+
+		remove_filter( 'pre_http_request', array( $this, 'mock_paypal_verified' ), 10 );
+	}
+
+	/**
+	 * Test: the dispute note carries no markup from the notification body
+	 *
+	 * The case ID and reason code go into the note text as the request sent them.
+	 *
+	 * The payload is quoted and slashed because Query::validate_item() strips slashes before
+	 * it calls the column's validate callback.
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::log_dispute
+	 */
+	public function test_dispute_note_carries_no_markup() {
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_verified' ), 10, 3 );
+
+		edd_update_order_status( $this->order->id, 'complete' );
+
+		$this->simulate_ipn_request(
+			$this->get_dispute_ipn_data(
+				array(
+					'case_id'     => wp_slash( 'PP-R-XSS<img src="x" onerror="alert(1)">' ),
+					'reason_code' => wp_slash( 'non_receipt<svg onload="alert(2)">' ),
+				)
+			)
+		);
+
+		$this->process_ipn();
+
+		// The order is put on hold either way, so assert that separately from the note text.
+		$order = edd_get_order( $this->order->id );
+		$this->assertEquals( 'on_hold', $order->status );
+
+		$notes = edd_get_notes(
+			array(
+				'object_type' => 'order',
+				'object_id'   => $order->id,
+			)
+		);
+
+		$dispute_note = false;
+		foreach ( $notes as $note ) {
+			if ( false !== strpos( $note->content, 'PayPal transaction has been disputed' ) ) {
+				$dispute_note = $note;
+				break;
+			}
+		}
+
+		$this->assertNotFalse( $dispute_note, 'Expected dispute note not found' );
+		$this->assertStringNotContainsString( '<img', $dispute_note->content );
+		$this->assertStringNotContainsString( 'onerror', $dispute_note->content );
+		$this->assertStringNotContainsString( '<svg', $dispute_note->content );
+		$this->assertStringNotContainsString( 'onload', $dispute_note->content );
 
 		remove_filter( 'pre_http_request', array( $this, 'mock_paypal_verified' ), 10 );
 	}
@@ -652,6 +718,9 @@ class IPN extends EDD_UnitTestCase {
 		// Create subscription for this test
 		$this->create_test_subscription();
 
+		// Processing a notification PayPal did not confirm is opt-in; the default is to refuse.
+		add_filter( 'edd_paypal_verification_fallback', array( $this, 'process_with_validation_fallback' ) );
+
 		// Mock connection error
 		add_filter( 'pre_http_request', array( $this, 'mock_paypal_connection_error' ), 10, 3 );
 
@@ -679,6 +748,7 @@ class IPN extends EDD_UnitTestCase {
 		$this->assertEquals( 'edd_subscription', $renewal_order->status );
 
 		remove_filter( 'pre_http_request', array( $this, 'mock_paypal_connection_error' ), 10 );
+		remove_filter( 'edd_paypal_verification_fallback', array( $this, 'process_with_validation_fallback' ) );
 	}
 
 	/**
@@ -994,6 +1064,227 @@ class IPN extends EDD_UnitTestCase {
 
 	public function reject_fallback() {
 		return 'reject';
+	}
+
+	public function process_with_validation_fallback() {
+		return 'process_with_validation';
+	}
+
+	/**
+	 * Test: test mode still verifies the notification with PayPal
+	 *
+	 * Test mode changes which endpoint verifies a notification, not whether one is verified.
+	 * `edd_get_paypal_redirect()` already resolves to the sandbox, so the postback still has
+	 * somewhere to go.
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::is_verified
+	 */
+	public function test_ipn_verifies_the_notification_in_test_mode() {
+		edd_update_option( 'test_mode', '1' );
+
+		add_filter( 'pre_http_request', array( $this, 'record_postback' ), 9, 3 );
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_invalid' ), 10, 3 );
+
+		edd_update_order_status( $this->order->id, 'complete' );
+		$this->simulate_ipn_request( $this->get_dispute_ipn_data() );
+
+		$this->process_ipn();
+
+		$this->assertCount( 1, $this->postbacks, 'Test mode must still verify the notification.' );
+		$this->assertStringContainsString(
+			'ipnpb.sandbox.paypal.com',
+			$this->postback_urls[0],
+			'The postback must go to the sandbox IPN host.'
+		);
+		$this->assertDisputeWasNotProcessed();
+	}
+
+	/**
+	 * Test: the postback goes to PayPal's IPN host
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::is_verified
+	 */
+	public function test_the_postback_goes_to_the_ipn_host() {
+		add_filter( 'pre_http_request', array( $this, 'record_postback' ), 9, 3 );
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_invalid' ), 10, 3 );
+
+		$this->simulate_ipn_request( $this->get_dispute_ipn_data() );
+
+		$this->process_ipn();
+
+		$this->assertNotEmpty( $this->postback_urls, 'A postback must have been sent.' );
+		$this->assertStringContainsString( 'ipnpb.paypal.com', $this->postback_urls[0] );
+	}
+
+	/**
+	 * Test: an unavailable verification refuses the notification by default
+	 *
+	 * Asserts behavior rather than the fallback filter's value, so the test stays valid whether
+	 * or not the decision keeps living behind a filter.
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::handle_verification_unavailable
+	 */
+	public function test_ipn_refuses_the_notification_when_verification_is_unavailable() {
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_403_waf' ), 10, 3 );
+
+		edd_update_order_status( $this->order->id, 'complete' );
+		$this->simulate_ipn_request( $this->get_dispute_ipn_data() );
+
+		$this->process_ipn();
+
+		$this->assertDisputeWasNotProcessed();
+	}
+
+	/**
+	 * Test: a server error refuses the notification by default
+	 *
+	 * The 403 and 5xx branches share `handle_verification_unavailable()`, and fixing one without
+	 * the other is a realistic mistake.
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::handle_verification_unavailable
+	 */
+	public function test_ipn_refuses_the_notification_on_a_server_error() {
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_503_error' ), 10, 3 );
+
+		edd_update_order_status( $this->order->id, 'complete' );
+		$this->simulate_ipn_request( $this->get_dispute_ipn_data() );
+
+		$this->process_ipn();
+
+		$this->assertDisputeWasNotProcessed();
+	}
+
+	/**
+	 * Test: the verification postback replays the notification as received
+	 *
+	 * PayPal's `_notify-validate` requires every field it sent to be posted back; a subset makes
+	 * PayPal answer INVALID for a legitimate notification, so the postback deliberately is not
+	 * filtered down to the fields the handler reads. This asserts that, so the postback is not
+	 * "hardened" later in a way that breaks verification for every store.
+	 *
+	 * @covers \EDD\Gateways\PayPal\Traits\Data::get_encoded_data_array
+	 */
+	public function test_the_verification_postback_replays_the_notification_as_received() {
+		add_filter( 'pre_http_request', array( $this, 'record_postback' ), 9, 3 );
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_invalid' ), 10, 3 );
+
+		$data = $this->get_dispute_ipn_data();
+		$this->simulate_ipn_request( $data );
+
+		$this->process_ipn();
+
+		$this->assertNotEmpty( $this->postbacks, 'A postback must have been sent.' );
+
+		$body = $this->postbacks[0];
+
+		$this->assertIsArray( $body, 'The postback body is built as an array of fields.' );
+		$this->assertArrayHasKey( 'cmd', $body );
+		$this->assertSame( '_notify-validate', $body['cmd'], 'The postback must ask PayPal to validate.' );
+
+		foreach ( $data as $key => $value ) {
+			$this->assertArrayHasKey( $key, $body, sprintf( 'The postback must carry %s as received.', $key ) );
+			$this->assertSame( $value, $body[ $key ], sprintf( 'The postback must not alter %s.', $key ) );
+		}
+	}
+
+	/**
+	 * Test: a well formed notification is still refused when PayPal denies it
+	 *
+	 * The control for the cases above, and the rule underneath them: passing every shape check
+	 * is not the same as being authentic. Passes before and after this change.
+	 *
+	 * @covers \EDD\Gateways\PayPal\IPN::is_verified
+	 */
+	public function test_a_well_formed_notification_is_refused_when_paypal_denies_it() {
+		add_filter( 'pre_http_request', array( $this, 'mock_paypal_invalid' ), 10, 3 );
+
+		edd_update_order_status( $this->order->id, 'complete' );
+		$this->simulate_ipn_request(
+			$this->get_dispute_ipn_data(
+				array(
+					'payment_date' => gmdate( 'H:i:s M d, Y T' ),
+					'mc_currency'  => 'USD',
+				)
+			)
+		);
+
+		$this->process_ipn();
+
+		$this->assertDisputeWasNotProcessed();
+	}
+
+	/**
+	 * Records each verification postback without changing the response.
+	 *
+	 * @param false|array|\WP_Error $response A preemptive return value of an HTTP request.
+	 * @param array                 $args     HTTP request arguments.
+	 * @param string                $url      The request URL.
+	 * @return false|array|\WP_Error The response, unchanged.
+	 */
+	public function record_postback( $response, $args, $url ) {
+		if ( false !== strpos( $url, 'paypal.com' ) && false !== strpos( $url, 'webscr' ) ) {
+			$this->postbacks[]     = isset( $args['body'] ) ? $args['body'] : array();
+			$this->postback_urls[] = $url;
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Mock filter to simulate the verification endpoint returning 403.
+	 *
+	 * @param false|array|\WP_Error $response A preemptive return value of an HTTP request.
+	 * @param array                 $args     HTTP request arguments.
+	 * @param string                $url      The request URL.
+	 * @return array Mocked response
+	 */
+	public function mock_paypal_403_waf( $response, $args, $url ) {
+		if ( false !== strpos( $url, 'paypal.com' ) && false !== strpos( $url, 'webscr' ) ) {
+			return array(
+				'headers'  => array(),
+				'body'     => 'Forbidden',
+				'response' => array(
+					'code'    => 403,
+					'message' => 'Forbidden',
+				),
+			);
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Whether the order under test carries a dispute note.
+	 *
+	 * @return bool
+	 */
+	private function has_dispute_note() {
+		$notes = edd_get_notes(
+			array(
+				'object_type' => 'order',
+				'object_id'   => $this->order->id,
+			)
+		);
+
+		foreach ( $notes as $note ) {
+			if ( false !== strpos( $note->content, 'PayPal transaction has been disputed' ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Asserts the dispute in the current request changed nothing about the order.
+	 */
+	private function assertDisputeWasNotProcessed() {
+		$this->assertEquals(
+			'complete',
+			edd_get_order( $this->order->id )->status,
+			'A notification which was not verified must not move the order.'
+		);
+		$this->assertFalse( $this->has_dispute_note(), 'A notification which was not verified must not annotate the order.' );
 	}
 
 	/**

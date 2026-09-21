@@ -110,10 +110,18 @@ class GeoIPTests extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * Test add_ip_to_data method with no POST data.
+	 * Builds an order with the GeoIP listener detached.
+	 *
+	 * The subscriber is wired at boot, so an order built while `edd_pro_ip` is in the request
+	 * already has the address written before a test calls add_ip_to_data() itself. Both cases below
+	 * used to pass with the call under test deleted outright.
+	 *
+	 * @return int
 	 */
-	public function test_add_ip_to_data_no_post_data() {
-		$order_id = edd_build_order( array(
+	private function build_order_without_geoip() {
+		remove_all_actions( 'edd_built_order' );
+
+		return edd_build_order( array(
 			'status'    => 'pending',
 			'email'     => 'test@example.com',
 			'user_info' => array(
@@ -122,12 +130,19 @@ class GeoIPTests extends EDD_UnitTestCase {
 				'email'      => 'test@example.com',
 			),
 		) );
+	}
 
-		self::$geoip->add_ip_to_data( $order_id );
+	/**
+	 * Test add_ip_to_data method with no POST data.
+	 */
+	public function test_add_ip_to_data_no_post_data() {
+		$order_id = $this->build_order_without_geoip();
+		$before   = edd_get_order( $order_id )->ip;
 
-		$order = edd_get_order( $order_id );
+		self::$geoip->add_ip_to_data( $order_id, array( 'email' => 'test@example.com' ) );
+
 		// IP should not be updated since no POST data
-		$this->assertNotEquals( '1.2.3.4', $order->ip );
+		$this->assertEquals( $before, edd_get_order( $order_id )->ip );
 
 		edd_delete_order( $order_id );
 	}
@@ -136,23 +151,17 @@ class GeoIPTests extends EDD_UnitTestCase {
 	 * Test add_ip_to_data method with POST data.
 	 */
 	public function test_add_ip_to_data_with_post_data() {
+		$order_id = $this->build_order_without_geoip();
+
+		// Assert the fixture: an order that already carries this address proves nothing.
+		$this->assertNotEquals( '5.6.7.8', edd_get_order( $order_id )->ip );
+
 		$_POST['edd_pro_ip'] = '5.6.7.8';
 
-		$order_id = edd_build_order( array(
-			'status'    => 'pending',
-			'email'     => 'test@example.com',
-			'user_info' => array(
-				'first_name' => 'Test',
-				'last_name'  => 'User',
-				'email'      => 'test@example.com',
-			),
-		) );
+		self::$geoip->add_ip_to_data( $order_id, array( 'email' => 'test@example.com' ) );
 
-		self::$geoip->add_ip_to_data( $order_id );
-
-		$order = edd_get_order( $order_id );
 		// Verify the IP from POST data was used
-		$this->assertEquals( '5.6.7.8', $order->ip );
+		$this->assertEquals( '5.6.7.8', edd_get_order( $order_id )->ip );
 
 		edd_delete_order( $order_id );
 		unset( $_POST['edd_pro_ip'] );

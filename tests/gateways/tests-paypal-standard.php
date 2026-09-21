@@ -57,7 +57,7 @@ class PayPalStandard extends EDD_UnitTestCase {
 		edd_set_purchase_session( array() );
 
 		// Clear GET parameters.
-		unset( $_GET['payment-id'], $_GET['payment-confirmation'] );
+		unset( $_GET['payment-id'], $_GET['payment-confirmation'], $_GET['order'] );
 
 		parent::tearDown();
 	}
@@ -81,6 +81,7 @@ class PayPalStandard extends EDD_UnitTestCase {
 		// Set GET parameters to simulate PayPal return.
 		$_GET['payment-id']            = $this->order_id;
 		$_GET['payment-confirmation']   = 'paypal';
+		$_GET['order']             = $this->order->get_receipt_hash();
 
 		// Call the function
 		$result = edd_paypal_success_page_content( 'Test content' );
@@ -113,6 +114,7 @@ class PayPalStandard extends EDD_UnitTestCase {
 		// Set GET parameters.
 		$_GET['payment-id']            = $this->order_id;
 		$_GET['payment-confirmation']   = 'paypal';
+		$_GET['order']             = $this->order->get_receipt_hash();
 
 		// Call the function.
 		$result = edd_paypal_success_page_content( 'Test content' );
@@ -204,6 +206,7 @@ class PayPalStandard extends EDD_UnitTestCase {
 		// Set GET parameters.
 		$_GET['payment-id']            = $this->order_id;
 		$_GET['payment-confirmation']   = 'paypal';
+		$_GET['order']             = $this->order->get_receipt_hash();
 
 		// Call the function.
 		$result = edd_paypal_success_page_content( 'Test content' );
