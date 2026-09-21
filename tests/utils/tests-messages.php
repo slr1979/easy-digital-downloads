@@ -29,8 +29,8 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::add
-	 * @covers \EDD\Utils\Utility::get_by_type
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::get_by_type
 	 */
 	public function test_add_and_get_by_type() {
 		Utility::add( 'error', 'code1', 'Error one' );
@@ -50,7 +50,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::get_by_code
+	 * @covers \EDD\Utils\Messages::get_by_code
 	 */
 	public function test_get_by_code() {
 		Utility::add( 'info', 'my_code', 'Info message' );
@@ -64,7 +64,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::get_all
+	 * @covers \EDD\Utils\Messages::get_all
 	 */
 	public function test_get_all() {
 		Utility::add( 'error', 'e1', 'Err' );
@@ -85,7 +85,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::remove
+	 * @covers \EDD\Utils\Messages::remove
 	 */
 	public function test_remove() {
 		Utility::add( 'error', 'to_remove', 'Message' );
@@ -96,8 +96,8 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::clear
-	 * @covers \EDD\Utils\Utility::has_any
+	 * @covers \EDD\Utils\Messages::clear
+	 * @covers \EDD\Utils\Messages::has_any
 	 */
 	public function test_clear_and_has_any() {
 		Utility::add( 'error', 'e1', 'Err' );
@@ -109,7 +109,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::to_html
+	 * @covers \EDD\Utils\Messages::to_html
 	 */
 	public function test_to_html_contains_expected_classes_and_escaped_content() {
 		Utility::add( 'error', 'err_1', 'Test error <script>' );
@@ -131,7 +131,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::build_html_for_messages
+	 * @covers \EDD\Utils\Messages::build_html_for_messages
 	 */
 	public function test_build_html_for_messages() {
 		$errors = array( 'id1' => 'Error text' );
@@ -144,7 +144,7 @@ class Messages extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * @covers \EDD\Utils\Utility::get_by_type
+	 * @covers \EDD\Utils\Messages::get_by_type
 	 */
 	public function test_migration_from_legacy_keys() {
 		EDD()->session->set( 'edd_errors', array( 'legacy_e' => 'Legacy error' ) );
@@ -161,5 +161,113 @@ class Messages extends EDD_UnitTestCase {
 
 		$this->assertNull( EDD()->session->get( 'edd_errors' ) );
 		$this->assertNull( EDD()->session->get( 'edd_success_errors' ) );
+	}
+
+	/**
+	 * Regression test for GitHub issue #2681: the checkout login form's
+	 * "Reset Password" link must survive Messages::add() (storage) and
+	 * Messages::to_html() (render) intact, including its href.
+	 *
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::to_html
+	 */
+	public function test_add_and_to_html_preserves_anchor_link() {
+		$message = 'Invalid username or incorrect password. <a href="https://example.com/wp-login.php?action=lostpassword">Reset Password</a>';
+		Utility::add( 'error', 'login_reset_password', $message );
+
+		$html = Utility::to_html();
+
+		$this->assertStringContainsString( '<a href="https://example.com/wp-login.php?action=lostpassword">', $html );
+		$this->assertStringContainsString( 'Reset Password</a>', $html );
+	}
+
+	/**
+	 * Regression test for GitHub issue #2681, exercised through the legacy
+	 * edd_set_error() / edd_build_errors_html( edd_get_errors() ) wrapper
+	 * path used at checkout.
+	 *
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::build_html_for_messages
+	 */
+	public function test_legacy_error_wrappers_preserve_anchor_link() {
+		$message = 'Invalid username or incorrect password. <a href="https://example.com/wp-login.php?action=lostpassword">Reset Password</a>';
+		edd_set_error( 'login_reset_password', $message );
+
+		$html = edd_build_errors_html( edd_get_errors() );
+
+		$this->assertStringContainsString( '<a href="https://example.com/wp-login.php?action=lostpassword">', $html );
+		$this->assertStringContainsString( 'Reset Password</a>', $html );
+	}
+
+	/**
+	 * Disallowed tags/attributes must never survive storage, and a disallowed
+	 * attribute on an otherwise allowed tag (e.g. onclick on <a>) must be
+	 * stripped while the tag itself and its allowed attributes remain.
+	 *
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::get_by_type
+	 */
+	public function test_add_strips_disallowed_tags_and_attributes_in_storage() {
+		$message = 'Click <a href="#" onclick="alert(1)">here</a> <img src="x.jpg" alt="x"> and <script>alert(2);</script> done.';
+		Utility::add( 'error', 'disallowed_markup', $message );
+
+		$stored = Utility::get_by_type( 'error' );
+		$this->assertArrayHasKey( 'disallowed_markup', $stored );
+
+		$stored_message = $stored['disallowed_markup'];
+		$this->assertStringContainsString( '<a href="#">here</a>', $stored_message );
+		$this->assertStringNotContainsString( '<img', $stored_message );
+		$this->assertStringNotContainsString( '<script', $stored_message );
+		$this->assertStringNotContainsString( 'onclick', $stored_message );
+	}
+
+	/**
+	 * Same disallowed tags/attributes as above, but asserted against the
+	 * rendered output of to_html() rather than storage.
+	 *
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::to_html
+	 */
+	public function test_to_html_strips_disallowed_tags_and_attributes() {
+		$message = 'Click <a href="#" onclick="alert(1)">here</a> <img src="x.jpg" alt="x"> and <script>alert(2);</script> done.';
+		Utility::add( 'error', 'disallowed_markup', $message );
+
+		$html = Utility::to_html();
+
+		$this->assertStringContainsString( '<a href="#">here</a>', $html );
+		$this->assertStringNotContainsString( '<img', $html );
+		$this->assertStringNotContainsString( '<script', $html );
+		$this->assertStringNotContainsString( 'onclick', $html );
+	}
+
+	/**
+	 * A javascript: URL in an otherwise allowed <a href> must not survive
+	 * storage or output, so the allowlist cannot carry a script payload.
+	 *
+	 * @covers \EDD\Utils\Messages::add
+	 * @covers \EDD\Utils\Messages::build_html_for_messages
+	 */
+	public function test_javascript_protocol_href_is_stripped() {
+		$message = 'Click <a href="javascript:alert(1)">here</a> now.';
+
+		Utility::add( 'error', 'bad_protocol', $message );
+		$stored = Utility::get_by_type( 'error' );
+		$this->assertArrayHasKey( 'bad_protocol', $stored );
+		$this->assertStringNotContainsString( 'javascript:', $stored['bad_protocol'] );
+
+		// Rendering is guarded separately: build_html_for_messages() also takes
+		// messages that never passed through add(), such as legacy session data.
+		$html = Utility::build_html_for_messages( array( 'bad_protocol' => $message ), 'error' );
+		$this->assertStringNotContainsString( 'javascript:', $html );
+		$this->assertStringContainsString( 'here</a>', $html );
+	}
+
+	/**
+	 * API-contract test: ALLOWED_TAGS must permit the 'a' tag and its href so
+	 * links (e.g. the checkout "Reset Password" link) survive the pipeline.
+	 */
+	public function test_allowed_tags_contains_anchor() {
+		$this->assertArrayHasKey( 'a', Utility::ALLOWED_TAGS );
+		$this->assertArrayHasKey( 'href', Utility::ALLOWED_TAGS['a'] );
 	}
 }

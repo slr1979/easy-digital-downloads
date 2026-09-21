@@ -298,4 +298,69 @@ class WPCronScheduler extends EDD_UnitTestCase {
 		$second_scheduled = wp_next_scheduled( 'edd_test_hook' );
 		$this->assertEquals( $first_scheduled, $second_scheduled, 'Second call should not create duplicate event' );
 	}
+
+	/**
+	 * Test that enqueue_async schedules a continuation event that coexists with a
+	 * pre-existing different-args event on the same hook.
+	 *
+	 * This does not exercise the same-args no-bail change: WP-Cron's own dedup of
+	 * identical events (within its ~10-minute window) would mask that behavior at
+	 * this unit level.
+	 */
+	public function test_enqueue_async_schedules_with_existing_different_args() {
+		$hook  = 'edd_test_hook';
+		$args  = array( 'continuation' => 1 );
+		$other = array( 'other' => 1 );
+
+		// Pre-schedule a different-args event on the same hook.
+		wp_schedule_single_event( time() + 3600, $hook, $other );
+		$other_before = wp_next_scheduled( $hook, $other );
+		$this->assertIsInt( $other_before, 'Precondition: different-args event should be scheduled' );
+
+		// Enqueue an async event with continuation args.
+		$result = $this->scheduler->enqueue_async( $hook, $args );
+
+		$this->assertTrue( $result, 'enqueue_async should schedule the event' );
+		$this->assertIsInt( wp_next_scheduled( $hook, $args ), 'The continuation event should be scheduled' );
+		$this->assertIsInt( wp_next_scheduled( $hook, $other ), 'The pre-existing different-args event should remain' );
+
+		// The pre-existing event's timestamp must be unchanged: a broad arg-less clear
+		// would have removed or rescheduled it.
+		$this->assertEquals(
+			$other_before,
+			wp_next_scheduled( $hook, $other ),
+			'The pre-existing different-args event should keep its original timestamp'
+		);
+
+		// Clean up the args-bearing events (tearDown only clears empty-args events).
+		wp_clear_scheduled_hook( $hook, $args );
+		wp_clear_scheduled_hook( $hook, $other );
+	}
+
+	/**
+	 * Test that has_pending matches by exact args.
+	 */
+	public function test_has_pending_matches_exact_args() {
+		$hook              = 'edd_test_hook';
+		$continuation_args = array( 'continuation' => 1 );
+
+		// Nothing scheduled yet.
+		$this->assertFalse( $this->scheduler->has_pending( $hook, $continuation_args ), 'Should be false before scheduling' );
+
+		// Schedule a recurring-style event with empty args.
+		wp_schedule_single_event( time() + 3600, $hook, array() );
+
+		// The empty-args event must not match the continuation args.
+		$this->assertFalse( $this->scheduler->has_pending( $hook, $continuation_args ), 'Empty-args event should not match continuation args' );
+
+		// Schedule the continuation event.
+		wp_schedule_single_event( time() + 7200, $hook, $continuation_args );
+
+		// Now it matches by exact args.
+		$this->assertTrue( $this->scheduler->has_pending( $hook, $continuation_args ), 'Continuation args should match exactly' );
+		$this->assertFalse( $this->scheduler->has_pending( $hook, array( 'continuation' => 2 ) ), 'Different args should not match' );
+
+		// Clean up the args-bearing event (tearDown only clears empty-args events).
+		wp_clear_scheduled_hook( $hook, $continuation_args );
+	}
 }

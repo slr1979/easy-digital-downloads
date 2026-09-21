@@ -1,4 +1,9 @@
 <?php
+/**
+ * Tests for the register fields.
+ *
+ * @package EDD\Tests\Forms
+ */
 
 namespace EDD\Tests\Forms;
 
@@ -164,6 +169,49 @@ class RegisterFields extends EDD_UnitTestCase {
 		$html = ob_get_clean();
 
 		$this->assertStringContainsString( 'name="edd_user_pass2"', $html );
+	}
+
+	/**
+	 * The registration form is processed by edd_process_register_form(), which reads edd_user_pass2.
+	 */
+	public function test_register_password_confirm_name_defaults_to_registration_key() {
+		$field = new PasswordConfirm( array() );
+
+		$this->assertEquals( 'edd_user_pass2', $field->get_name() );
+	}
+
+	/**
+	 * The checkout is processed by edd_purchase_form_validate_new_user(), which reads edd_user_pass_confirm.
+	 */
+	public function test_register_password_confirm_name_on_checkout_is_checkout_key() {
+		$field = new PasswordConfirm( array( 'is_checkout' => true ) );
+
+		$this->assertEquals( 'edd_user_pass_confirm', $field->get_name() );
+	}
+
+	public function test_register_password_confirm_block_checkout_input_uses_checkout_key() {
+		$field = new PasswordConfirm( array( 'is_checkout' => true ) );
+
+		ob_start();
+		$field->do_input();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'name="edd_user_pass_confirm"', $html );
+	}
+
+	public function test_register_password_confirm_shortcode_checkout_input_uses_checkout_key() {
+		$field = new PasswordConfirm(
+			array(
+				'is_block'    => false,
+				'is_checkout' => true,
+			)
+		);
+
+		ob_start();
+		$field->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'name="edd_user_pass_confirm"', $html );
 	}
 
 	public function test_register_password_confirm_input_id() {

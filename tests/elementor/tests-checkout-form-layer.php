@@ -469,6 +469,10 @@ class Tests_Checkout_Form_Layer extends EDD_UnitTestCase {
 
 		\Elementor\Plugin::$instance = $plugin;
 
+		// A page built with Elementor always carries its tree in _elementor_data, and the widget
+		// lookup tests that raw string before it decodes anything.
+		update_post_meta( $post_id, '_elementor_data', wp_slash( wp_json_encode( $elements ) ) );
+
 		// Page::get_id() resolves the current page from the elementor-preview request param.
 		$_REQUEST['elementor-preview'] = (string) $post_id;
 

@@ -51,6 +51,7 @@ class ConnectSyncTest extends EDD_UnitTestCase {
 	public function tearDown(): void {
 		remove_all_filters( 'pre_http_request' );
 		remove_all_filters( 'edd_is_test_mode' );
+		remove_all_filters( 'wp_doing_cron' );
 		$this->clean_up_options();
 		$this->unschedule_sync_hook();
 		parent::tearDown();
@@ -86,6 +87,76 @@ class ConnectSyncTest extends EDD_UnitTestCase {
 	private function unschedule_sync_hook() {
 		$scheduler = Handler::get_scheduler();
 		$scheduler->unschedule( ConnectSync::SYNC_HOOK, array( 'src' => 'home' ) );
+	}
+
+	/**
+	 * The sync hook must not run the reconcile job for an ordinary HTTP request.
+	 *
+	 * ConnectSync is a SubscriberInterface listener rather than a Cron\Components\Component, so
+	 * the guard in Component::subscribe() does not reach it and it carries its own check. It
+	 * also takes no arguments, so it cannot fail to find a subject the way a handler expecting
+	 * a scalar ID would.
+	 */
+	public function test_sync_hook_refuses_outside_cron() {
+		add_filter( 'edd_is_test_mode', '__return_true' );
+		$this->onboard_mode( 'sandbox' );
+
+		$called = false;
+		add_filter(
+			'pre_http_request',
+			function () use ( &$called ) {
+				$called = true;
+				return array(
+					'response' => array( 'code' => 200 ),
+					'body'     => wp_json_encode( array() ),
+				);
+			}
+		);
+
+		// Assert the fixture twice over: the listener has to be registered, and a direct call
+		// has to actually reach the Connect API. Without both, the assertion below would pass
+		// against an unonboarded no-op rather than measuring the guard.
+		$this->assertNotFalse(
+			has_action( ConnectSync::SYNC_HOOK ),
+			'Fixture: ConnectSync must be listening to its sync hook.'
+		);
+		$this->sync->reconcile();
+		$this->assertTrue( $called, 'Fixture: an onboarded mode must reach the Connect API.' );
+
+		$called = false;
+		do_action( ConnectSync::SYNC_HOOK, array( 'edd_action' => 'paypal_v3_sync_connect' ) );
+
+		$this->assertFalse(
+			$called,
+			'An HTTP request must not run the PayPal Connect reconcile job.'
+		);
+	}
+
+	/**
+	 * The paired positive: a real cron run must still reconcile.
+	 */
+	public function test_sync_hook_runs_inside_cron() {
+		add_filter( 'edd_is_test_mode', '__return_true' );
+		$this->onboard_mode( 'sandbox' );
+
+		$called = false;
+		add_filter(
+			'pre_http_request',
+			function () use ( &$called ) {
+				$called = true;
+				return array(
+					'response' => array( 'code' => 200 ),
+					'body'     => wp_json_encode( array() ),
+				);
+			}
+		);
+
+		$this->assertNotFalse( has_action( ConnectSync::SYNC_HOOK ) );
+
+		add_filter( 'wp_doing_cron', '__return_true' );
+		do_action( ConnectSync::SYNC_HOOK );
+
+		$this->assertTrue( $called, 'Cron must still run the PayPal Connect reconcile job.' );
 	}
 
 	/**

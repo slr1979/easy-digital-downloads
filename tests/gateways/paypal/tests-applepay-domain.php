@@ -42,6 +42,13 @@ class ApplePayDomainTest extends EDD_UnitTestCase {
 	private $original_docroot = null;
 
 	/**
+	 * The current user as the harness left it, restored afterwards.
+	 *
+	 * @var int
+	 */
+	private $original_user = 0;
+
+	/**
 	 * Set up V3 connection options and a writable document root.
 	 */
 	public function setUp(): void {
@@ -55,6 +62,13 @@ class ApplePayDomainTest extends EDD_UnitTestCase {
 		update_option( 'edd_paypal_live_store_id', 'test-store-id' );
 		update_option( 'edd_paypal_live_hmac_key', str_repeat( 'a', 64 ) );
 		update_option( 'edd_paypal_live_merchant_id', 'MERCHANT_ID' );
+
+		// These cases change the acting user, and the harness does not reset it between tests.
+		$this->original_user = get_current_user_id();
+
+		// Registering a domain requires the capability that administers the store, so the cases
+		// below act as someone who holds it. test_verify_domain_requires_a_capability covers the refusal.
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
 
 		$this->docroot          = sys_get_temp_dir() . '/edd-applepay-' . uniqid();
 		$this->original_docroot = $_SERVER['DOCUMENT_ROOT'] ?? null;
@@ -87,6 +101,8 @@ class ApplePayDomainTest extends EDD_UnitTestCase {
 		}
 
 		$this->remove_docroot();
+
+		wp_set_current_user( $this->original_user );
 
 		parent::tearDown();
 	}
@@ -142,6 +158,143 @@ class ApplePayDomainTest extends EDD_UnitTestCase {
 			},
 			10,
 			3
+		);
+	}
+
+	/**
+	 * The premise: this route runs on admin_init, so it has to hold its own capability check.
+	 */
+	public function test_the_route_is_registered_on_admin_init() {
+		$this->assertArrayHasKey(
+			'admin_init',
+			DomainSubscriber::get_subscribed_events(),
+			'The verify route runs on admin_init.'
+		);
+	}
+
+	/**
+	 * A caller with no capability must not drive domain registration.
+	 */
+	public function test_verify_domain_requires_a_capability() {
+		wp_set_current_user( 0 );
+
+		$register_count = 0;
+		$this->mock_connect( array( 'response' => array( 'code' => 200 ), 'body' => '{}' ), $register_count );
+
+		// Nothing is installed, so the flow would run and register: the capability is the only
+		// thing left to refuse it. Planting a valid baseline instead would make this pass
+		// whatever the gate does, because the host no longer varies with the request.
+		$this->assertFalse( get_option( DomainAssociation::HOST_OPTION ), 'Fixture: no host may be stored yet.' );
+		$this->assertDirectoryDoesNotExist( $this->docroot . '/.well-known', 'Fixture: nothing may be installed yet.' );
+
+		( new DomainSubscriber() )->verify_domain();
+
+		$this->assertSame( 0, $register_count, 'No registration may be attempted for a caller with no capability.' );
+		$this->assertFalse( get_option( DomainAssociation::HOST_OPTION ), 'No host may be stored.' );
+		$this->assertFalse( get_option( DomainAssociation::ERROR_OPTION ), 'No error may be recorded.' );
+		$this->assertFalse( get_option( DomainAssociation::RETRY_OPTION ), 'No retry may be scheduled.' );
+	}
+
+	/**
+	 * The paired positive: a caller who administers the store still reaches the flow.
+	 */
+	public function test_verify_domain_runs_for_a_shop_settings_manager() {
+		$this->assertTrue( current_user_can( 'manage_shop_settings' ), 'Fixture: the actor must hold the capability.' );
+
+		$register_count = 0;
+		$this->mock_connect( array( 'response' => array( 'code' => 200 ), 'body' => '{}' ), $register_count );
+
+		( new DomainSubscriber() )->verify_domain();
+
+		$this->assertSame( 1, $register_count, 'A store administrator must still be able to register the domain.' );
+	}
+
+	/**
+	 * The domain registered is the site's own, not whatever the request asked for.
+	 */
+	public function test_the_registered_domain_comes_from_the_site_address() {
+		$original_host        = $_SERVER['HTTP_HOST'] ?? null;
+		$_SERVER['HTTP_HOST'] = 'other.example';
+
+		$submitted = null;
+		add_filter(
+			'pre_http_request',
+			function ( $preempt, $args, $url ) use ( &$submitted ) {
+				if ( false !== strpos( $url, '/applepay/register-domain' ) ) {
+					$body      = json_decode( $args['body'] ?? '{}', true );
+					$submitted = $body['domain'] ?? ( $body['domain_name'] ?? null );
+
+					return array( 'response' => array( 'code' => 200 ), 'body' => '{}' );
+				}
+				if ( false !== strpos( $url, '/applepay/domain-association' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'body'     => wp_json_encode( array( 'file' => 'APPLE-PAY-FILE-CONTENT' ) ),
+					);
+				}
+
+				return $preempt;
+			},
+			10,
+			3
+		);
+
+		( new DomainSubscriber() )->verify_domain();
+
+		if ( is_null( $original_host ) ) {
+			unset( $_SERVER['HTTP_HOST'] );
+		} else {
+			$_SERVER['HTTP_HOST'] = $original_host;
+		}
+		$expected = wp_parse_url( home_url(), PHP_URL_HOST );
+
+		$this->assertNotNull( $submitted, 'Fixture: the registration request must have been built.' );
+		$this->assertSame( $expected, $submitted, 'The registered domain must come from the site address.' );
+		$this->assertSame( $expected, get_option( DomainAssociation::HOST_OPTION ), 'The stored host must be the site address.' );
+	}
+
+	/**
+	 * Re-verify drops the host PayPal actually holds, not the one derived now.
+	 *
+	 * A store that registered under a different host before the domain came from the site
+	 * address would otherwise leave that registration in place.
+	 */
+	public function test_reverify_deregisters_the_recorded_host() {
+		update_option( DomainAssociation::HOST_OPTION, 'previously-registered.example' );
+
+		$deregistered = null;
+		add_filter(
+			'pre_http_request',
+			function ( $preempt, $args, $url ) use ( &$deregistered ) {
+				// Deregistration is a DELETE to the same path registration POSTs to, so the
+				// method is what tells them apart.
+				if ( false !== strpos( $url, '/applepay/register-domain' ) ) {
+					if ( 'DELETE' === strtoupper( $args['method'] ?? '' ) ) {
+						$body         = json_decode( $args['body'] ?? '{}', true );
+						$deregistered = $body['domain'] ?? null;
+					}
+
+					return array( 'response' => array( 'code' => 200 ), 'body' => '{}' );
+				}
+				if ( false !== strpos( $url, '/applepay/domain-association' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'body'     => wp_json_encode( array( 'file' => 'APPLE-PAY-FILE-CONTENT' ) ),
+					);
+				}
+
+				return $preempt;
+			},
+			10,
+			3
+		);
+
+		DomainAssociation::reverify();
+
+		$this->assertSame(
+			'previously-registered.example',
+			$deregistered,
+			'Re-verify must drop the host that was recorded as registered.'
 		);
 	}
 

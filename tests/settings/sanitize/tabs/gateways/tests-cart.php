@@ -15,6 +15,48 @@ class CartSection extends EDD_UnitTestCase {
 		parent::tearDown();
 	}
 
+	/**
+	 * The empty cart preview is one message, so a list posted for it keeps the
+	 * message the store holds.
+	 */
+	public function test_an_empty_cart_preview_posted_as_a_list_keeps_the_stored_message() {
+		edd_update_option( 'empty_cart_preview', 'Nothing here' );
+		$this->assertSame( 'Nothing here', edd_get_option( 'empty_cart_preview' ), 'Fixture: a message must be stored, or there is nothing to keep.' );
+
+		$this->assertSame(
+			array(
+				'empty_cart_preview' => 'Nothing here',
+			),
+			Cart::sanitize(
+				array(
+					'empty_cart_preview' => array( 'x' ),
+				)
+			)
+		);
+
+		edd_delete_option( 'empty_cart_preview' );
+	}
+
+	/**
+	 * A store with no message of its own has nothing to keep, so the refused
+	 * value is empty and the registered default is what reads back.
+	 */
+	public function test_an_empty_cart_preview_posted_as_a_list_is_empty_when_nothing_is_stored() {
+		edd_delete_option( 'empty_cart_preview' );
+		$this->assertEmpty( edd_get_option( 'empty_cart_preview' ), 'Fixture: nothing may be stored under the key.' );
+
+		$this->assertSame(
+			array(
+				'empty_cart_preview' => '',
+			),
+			Cart::sanitize(
+				array(
+					'empty_cart_preview' => array( 'x' ),
+				)
+			)
+		);
+	}
+
 	public function test_empty_cart_behavior_empty() {
 		$this->assertSame(
 			array(

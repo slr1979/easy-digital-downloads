@@ -470,4 +470,68 @@ class ActionScheduler extends EDD_UnitTestCase {
 		// Clean up custom group.
 		as_unschedule_all_actions( $hook, null, $group );
 	}
+
+	/**
+	 * Test that enqueue_async creates an async action and returns true.
+	 */
+	public function test_enqueue_async_creates_action() {
+		$hook = 'edd_test_enqueue_async';
+		$args = array( 'continuation' => 1 );
+
+		$result = $this->scheduler->enqueue_async( $hook, $args );
+
+		$this->assertTrue( $result, 'enqueue_async should return true when an action is created' );
+
+		// Verify a matching action was scheduled in the edd group.
+		$this->assertTrue(
+			as_has_scheduled_action( $hook, $args, 'edd' ),
+			'An async action should be scheduled for the hook and args'
+		);
+	}
+
+	/**
+	 * Test that has_pending counts pending actions but excludes in-progress ones.
+	 *
+	 * This is the primary backend's core semantic: has_pending() only counts
+	 * PENDING actions, so a currently running batch does not match itself when it
+	 * gates its own successor. Unlike has_scheduled(), an in-progress action is not
+	 * counted. It also matches args exactly, so a continuation action (specific args)
+	 * never collides with an empty-args run of the same hook.
+	 */
+	public function test_has_pending_excludes_in_progress() {
+		$hook = 'edd_test_has_pending';
+		$args = array( 'continuation' => 1 );
+
+		// A freshly enqueued async action is PENDING, so has_pending() is true.
+		$action_id = as_enqueue_async_action( $hook, $args, 'edd' );
+		$this->assertNotEquals( 0, $action_id, 'Precondition: the async action should be enqueued' );
+		$this->assertTrue(
+			$this->scheduler->has_pending( $hook, $args ),
+			'has_pending should return true for a pending action'
+		);
+
+		// Exact-args matching: an empty-args query must not match the continuation action.
+		$this->assertFalse(
+			$this->scheduler->has_pending( $hook, array() ),
+			'has_pending should match args exactly and not collide on empty args'
+		);
+
+		// Transition the action to in-progress (STATUS_RUNNING) via the AS store.
+		\ActionScheduler_Store::instance()->log_execution( $action_id );
+
+		// has_pending excludes in-progress actions, so it now returns false...
+		$this->assertFalse(
+			$this->scheduler->has_pending( $hook, $args ),
+			'has_pending should exclude in-progress actions'
+		);
+
+		// ...while has_scheduled still counts the running action (pending OR in-progress).
+		$this->assertTrue(
+			$this->scheduler->has_scheduled( $hook, $args ),
+			'has_scheduled should still count the in-progress action'
+		);
+
+		// Clean up the running action, which the pending-only tearDown does not remove.
+		\ActionScheduler_Store::instance()->delete_action( $action_id );
+	}
 }

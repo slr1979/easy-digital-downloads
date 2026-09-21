@@ -252,23 +252,17 @@ class RefundFlowTest extends EDD_UnitTestCase {
 	}
 
 	/**
-	 * A v3 order (has paypal_order_id meta) still routes to the orders endpoint.
+	 * A v3 order, which also carries paypal_order_id meta, routes to the captures
+	 * endpoint like every other refund on a Connect store.
 	 *
-	 * Regression guard: the v3 path must not change after the v2-legacy routing was added.
+	 * Regression guard: paypal_order_id is written by both checkout versions, so it must
+	 * never be what decides the endpoint.
 	 */
-	public function test_v3_order_continues_to_use_orders_endpoint() {
+	public function test_v3_order_on_v3_store_routes_to_captures_endpoint() {
 		$order_id = Helpers\EDD_Helper_Payment::create_simple_payment(
 			array( 'gateway' => 'paypal_commerce' )
 		);
 		edd_update_order( $order_id, array( 'gateway' => 'paypal_commerce' ) );
-		edd_add_order_transaction( array(
-			'object_id'      => $order_id,
-			'object_type'    => 'order',
-			'transaction_id' => 'CAP_V3_001',
-			'gateway'        => 'paypal_commerce',
-			'status'         => 'complete',
-			'total'          => 20.00,
-		) );
 		edd_update_order_meta( $order_id, 'paypal_order_id', 'PPORDER_V3_001' );
 
 		$order        = edd_get_order( $order_id );
@@ -289,13 +283,21 @@ class RefundFlowTest extends EDD_UnitTestCase {
 
 		\EDD\Gateways\PayPal\refund_transaction( $order );
 
-		$this->assertStringContainsString( '/v3/paypal/orders/PPORDER_V3_001/refund', $captured_url );
-		$this->assertStringNotContainsString( '/captures/', $captured_url );
+		$this->assertStringContainsString(
+			'/v3/paypal/captures/' . $order->get_transaction_id() . '/refund',
+			$captured_url
+		);
+		$this->assertStringNotContainsString( '/v3/paypal/orders/', $captured_url );
+		$this->assertStringNotContainsString( 'PPORDER_V3_001', $captured_url, 'The paypal_order_id meta must not reach the URL.' );
 	}
 
 	/**
 	 * A v2 order on a v2 store (not v3-onboarded) takes the legacy API path,
 	 * which throws Authentication_Exception when no v2 credentials are configured.
+	 *
+	 * The order carries paypal_order_id meta because the v2 checkout records it too.
+	 * Without that meta the store-version check can regress to reading the meta and
+	 * this test would still pass.
 	 */
 	public function test_v2_order_on_v2_store_throws_without_credentials() {
 		// Clear v3 options to simulate a pure v2 store.
@@ -313,12 +315,44 @@ class RefundFlowTest extends EDD_UnitTestCase {
 			'status'         => 'complete',
 			'total'          => 20.00,
 		) );
+		edd_update_order_meta( $order_id, 'paypal_order_id', 'PPORDER_V2_ON_V2' );
 
 		$order = edd_get_order( $order_id );
 
 		$this->expectException( \EDD\Gateways\PayPal\Exceptions\Authentication_Exception::class );
 
 		\EDD\Gateways\PayPal\refund_transaction( $order );
+	}
+
+	/**
+	 * The pre-flight leaves a v2 store alone, even though its orders carry
+	 * paypal_order_id meta.
+	 *
+	 * The reported failure: the pre-flight called the proxy with no store credentials,
+	 * which was rejected for missing authentication headers, so the refund reached
+	 * neither PayPal nor EDD. The nonce is valid here so that the store-version check
+	 * is the only thing that can stop the request.
+	 */
+	public function test_preflight_skips_a_v2_store_whose_order_has_paypal_order_id() {
+		$this->clean_up_options();
+
+		// Leave the commerce version reporting v3 so the missing Connect credentials are
+		// the only thing that can stop the request.
+		update_option( 'edd_paypal_sandbox_commerce_version', 'v3' );
+
+		$order_id = $this->build_refundable_order();
+		$this->sign_in_refunder();
+		$this->seed_refund_request( $order_id, wp_create_nonce( 'edd_process_refund' ) );
+
+		$calls = $this->count_refund_requests();
+
+		\EDD\Gateways\PayPal\preflight_refund_submission();
+
+		$this->assertSame( 0, $calls->count, 'A store with no Connect credentials must not call the proxy.' );
+		$this->assertFalse(
+			get_transient( \EDD\Gateways\PayPal\preflight_cache_key( edd_get_order( $order_id )->get_transaction_id() ) ),
+			'Nothing may be cached when the pre-flight is skipped.'
+		);
 	}
 
 	/**
@@ -362,4 +396,181 @@ class RefundFlowTest extends EDD_UnitTestCase {
 		$this->assertFalse( $http_request_made, 'refund_transaction() should reuse the pre-flighted response, not make a new HTTP request.' );
 		$this->assertFalse( get_transient( \EDD\Gateways\PayPal\preflight_cache_key( $transaction_id ) ), 'Pre-flight transient should be deleted after use.' );
 	}
+
+	/**
+	 * The pre-flight must not reach the gateway without a valid refund nonce.
+	 *
+	 * The pre-flight runs ahead of the callback that owns authorization for this action,
+	 * so it has to establish intent itself rather than inheriting it.
+	 */
+	public function test_preflight_requires_a_valid_refund_nonce() {
+		$order_id = $this->build_refundable_order();
+		$this->sign_in_refunder();
+		$this->seed_refund_request( $order_id, 'not-a-real-nonce' );
+
+		$calls = $this->count_refund_requests();
+
+		\EDD\Gateways\PayPal\preflight_refund_submission();
+
+		$this->assertSame( 0, $calls->count, 'No refund may be sent to the gateway without a valid nonce.' );
+		$this->assertFalse(
+			get_transient( \EDD\Gateways\PayPal\preflight_cache_key( edd_get_order( $order_id )->get_transaction_id() ) ),
+			'No pre-flight result may be cached.'
+		);
+	}
+
+	/**
+	 * A nonce minted for some other action must not authorize a refund.
+	 *
+	 * Pins the action name, not merely the presence of a token.
+	 */
+	public function test_preflight_rejects_a_nonce_for_another_action() {
+		$order_id = $this->build_refundable_order();
+		$this->sign_in_refunder();
+		$this->seed_refund_request( $order_id, wp_create_nonce( 'edd_process_refund_something_else' ) );
+
+		$calls = $this->count_refund_requests();
+
+		\EDD\Gateways\PayPal\preflight_refund_submission();
+
+		$this->assertSame( 0, $calls->count, 'A nonce for a different action must not authorize a refund.' );
+	}
+
+	/**
+	 * The control: a properly nonced refund still pre-flights.
+	 *
+	 * Without this, refusing every request would satisfy the cases above.
+	 */
+	public function test_preflight_dispatches_with_a_valid_nonce() {
+		$order_id = $this->build_refundable_order();
+		$this->sign_in_refunder();
+		$this->seed_refund_request( $order_id, wp_create_nonce( 'edd_process_refund' ) );
+
+		$calls = $this->count_refund_requests();
+
+		\EDD\Gateways\PayPal\preflight_refund_submission();
+
+		$this->assertSame( 1, $calls->count, 'A properly nonced refund must still reach the gateway.' );
+		$this->assertNotFalse(
+			get_transient( \EDD\Gateways\PayPal\preflight_cache_key( edd_get_order( $order_id )->get_transaction_id() ) ),
+			'The pre-flight result must be cached for the post-flight callback.'
+		);
+	}
+
+	/**
+	 * A nonce for the right action, minted by somebody else, must not authorize a refund.
+	 *
+	 * wp_create_nonce() binds the user ID into the hash, so this is closer to the audit's
+	 * scenario than a malformed token: the value is well formed and correct for the action,
+	 * it just was not created by the person making the request.
+	 */
+	public function test_preflight_rejects_a_nonce_minted_by_another_user() {
+		$order_id = $this->build_refundable_order();
+
+		// Mint the nonce as somebody else, before switching to the acting user.
+		$other_user = new \WP_User( $this->factory->user->create( array( 'role' => 'shop_worker' ) ) );
+		$other_user->add_cap( 'edit_shop_payments' );
+		wp_set_current_user( $other_user->ID );
+		$their_nonce = wp_create_nonce( 'edd_process_refund' );
+
+		// The acting user still holds the capability, so the nonce is the only thing that can
+		// refuse this request.
+		$acting_user = $this->sign_in_refunder();
+		$this->assertNotSame( $other_user->ID, $acting_user, 'The two users must be different.' );
+		$this->assertTrue( current_user_can( 'edit_shop_payments' ), 'The capability gate must not be what refuses.' );
+
+		$this->seed_refund_request( $order_id, $their_nonce );
+
+		$calls = $this->count_refund_requests();
+
+		\EDD\Gateways\PayPal\preflight_refund_submission();
+
+		$this->assertSame( 0, $calls->count, "A nonce minted by another user must not authorize a refund." );
+	}
+
+	/**
+	 * Creates a paypal_commerce order that the pre-flight will act on.
+	 *
+	 * @return int
+	 */
+	private function build_refundable_order() {
+		$order_id = Helpers\EDD_Helper_Payment::create_simple_payment(
+			array( 'gateway' => 'paypal_commerce' )
+		);
+		edd_update_order( $order_id, array( 'gateway' => 'paypal_commerce' ) );
+		edd_update_order_meta( $order_id, 'paypal_order_id', 'ORDER_P1B' );
+
+		return $order_id;
+	}
+
+	/**
+	 * Signs in a user who may refund orders, and returns their ID.
+	 *
+	 * The capability is granted explicitly because the pre-flight's own gates are what these
+	 * tests cover, not how EDD composes its roles. Nonces are bound to the user who creates
+	 * them, so which user is signed in decides whether a nonce validates.
+	 *
+	 * @return int
+	 */
+	private function sign_in_refunder() {
+		$user = new \WP_User( $this->factory->user->create( array( 'role' => 'shop_worker' ) ) );
+		$user->add_cap( 'edit_shop_payments' );
+		wp_set_current_user( $user->ID );
+
+		return $user->ID;
+	}
+
+	/**
+	 * Seeds the request the admin refund modal submits, with the nonce under test.
+	 *
+	 * @param int    $order_id The order being refunded.
+	 * @param string $nonce    The value to place in the form's nonce field.
+	 */
+	private function seed_refund_request( $order_id, $nonce ) {
+		$order = edd_get_order( $order_id );
+		$items = array();
+
+		foreach ( $order->get_items() as $item ) {
+			$items[] = sprintf(
+				'refund_order_item[%1$d][quantity]=%2$d&refund_order_item[%1$d][subtotal]=%3$s&refund_order_item[%1$d][tax]=%4$s&refund_order_item[%1$d][id]=%1$d',
+				$item->id,
+				$item->quantity,
+				edd_format_amount( $item->subtotal ),
+				edd_format_amount( $item->tax )
+			);
+		}
+
+		$_POST['order_id'] = $order_id;
+		$_POST['data']     = 'edd-paypal-commerce-refund=1&edd_process_refund=' . rawurlencode( $nonce ) . '&' . implode( '&', $items );
+	}
+
+	/**
+	 * Intercepts outbound HTTP and counts refund calls, returning a live counter.
+	 *
+	 * @return object
+	 */
+	private function count_refund_requests() {
+		$counter = new \stdClass();
+		$counter->count = 0;
+
+		remove_all_filters( 'pre_http_request' );
+		add_filter(
+			'pre_http_request',
+			function ( $status, $args, $url ) use ( $counter ) {
+				if ( false !== strpos( (string) $url, '/refund' ) ) {
+					$counter->count++;
+				}
+
+				return array(
+					'response' => array( 'code' => 201 ),
+					'body'     => wp_json_encode( array( 'id' => 'REFUND_TEST', 'status' => 'COMPLETED' ) ),
+				);
+			},
+			10,
+			3
+		);
+
+		return $counter;
+	}
+
 }

@@ -144,7 +144,7 @@ class Scripts extends EDD_UnitTestCase {
 	 */
 	public function _admin_scripts_dp() {
 		return array(
-			array( 'jquery-chosen', 'enqueued' ),
+			array( 'edd-admin-chosen-compat', 'enqueued' ),
 			array( 'edd-admin-scripts', 'enqueued' ),
 			array( 'jquery-ui-datepicker', 'enqueued' ),
 			array( 'jquery-ui-dialog', 'enqueued' ),
@@ -171,7 +171,7 @@ class Scripts extends EDD_UnitTestCase {
 	 */
 	public function _admin_styles_dp() {
 		return array(
-			array( 'jquery-chosen', 'enqueued' ),
+			array( 'edd-admin-chosen', 'enqueued' ),
 			array( 'wp-color-picker', 'enqueued' ),
 			array( 'edd-admin', 'enqueued' ),
 		);

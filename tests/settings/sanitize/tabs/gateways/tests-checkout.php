@@ -119,6 +119,23 @@ class CheckoutSection extends EDD_UnitTestCase {
 		);
 	}
 
+	/**
+	 * The address fields post a marker to say nothing is checked, which the section
+	 * reads as the empty list rather than as a value it could not use.
+	 */
+	public function test_address_fields_posted_with_nothing_checked_are_emptied_without_a_notice() {
+		$this->assertSame( 'array', \EDD\Settings\Sanitize\Registry::get_shape( 'checkout_address_fields' ), 'Fixture: the setting must store a list.' );
+		$this->assertTrue( method_exists( Checkout::class, 'sanitize_checkout_address_fields' ), 'Fixture: the section must name the key.' );
+
+		if ( ! function_exists( 'add_settings_error' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/template.php';
+		}
+		$this->assertTrue( function_exists( 'add_settings_error' ), 'Fixture: the admin include must be loaded, or an empty notice list proves nothing.' );
+
+		$this->assertSame( array(), Checkout::sanitize_field( 'checkout_address_fields', '-1' ) );
+		$this->assertSame( array(), get_settings_errors( 'edd-notices' ) );
+	}
+
 	public function test_checkout_address_fields_empty() {
 		$this->assertSame(
 			array(

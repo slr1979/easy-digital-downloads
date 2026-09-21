@@ -46,6 +46,14 @@ class Notices extends EDD_UnitTestCase {
 		$pagenow = null;
 		$typenow = null;
 		delete_transient( 'edd_admin_notices' );
+
+		remove_filter( 'edd_is_admin_page', array( $this, 'filter_is_edd_admin_page' ), 10 );
+		edd_delete_option( 'gateways' );
+		edd_delete_option( 'stripe_elements_mode' );
+		edd_delete_option( 'stripe_connect_account_id' );
+		edd_delete_option( 'test_mode' );
+		edd_delete_option( 'test_secret_key' );
+
 		parent::tearDown();
 	}
 
@@ -323,7 +331,71 @@ class Notices extends EDD_UnitTestCase {
 		$this->assertSame( 'success', $stored[0]['class'] );
 	}
 
+	/** Tests for add_stripe_notice() ********************************************/
+
+	/**
+	 * @covers EDD_Notices::add_stripe_notice
+	 */
+	public function test_stripe_notice_points_connected_card_elements_stores_to_elements_mode() {
+		$this->set_stripe_card_elements_context();
+		edd_update_option( 'stripe_connect_account_id', 'acct_test' );
+
+		$this->add_stripe_notice();
+
+		$notices = $this->get_notices_property();
+		$this->assertArrayHasKey( 'edd-stripe-card-elements', $notices );
+		$this->assertStringContainsString( 'change Elements Mode to Payment Elements', $notices['edd-stripe-card-elements'] );
+		$this->assertStringNotContainsString( 'Connect with Stripe', $notices['edd-stripe-card-elements'] );
+	}
+
+	/**
+	 * @covers EDD_Notices::add_stripe_notice
+	 */
+	public function test_stripe_notice_points_manual_api_key_stores_to_stripe_connect() {
+		$this->set_stripe_card_elements_context();
+		edd_update_option( 'test_mode', true );
+		edd_update_option( 'test_secret_key', 'sk_test_manual' );
+
+		$this->add_stripe_notice();
+
+		$notices = $this->get_notices_property();
+		$this->assertArrayHasKey( 'edd-stripe-card-elements', $notices );
+		$this->assertStringContainsString( 'Connect with Stripe', $notices['edd-stripe-card-elements'] );
+		$this->assertStringNotContainsString( 'Elements Mode', $notices['edd-stripe-card-elements'] );
+	}
+
 	/** Helpers ******************************************************************/
+
+	/**
+	 * Invokes the private add_stripe_notice() method.
+	 */
+	private function add_stripe_notice(): void {
+		$method = new \ReflectionMethod( \EDD_Notices::class, 'add_stripe_notice' );
+		$method->setAccessible( true );
+		$method->invoke( $this->notices );
+	}
+
+	/**
+	 * Puts the store on Card Elements with Stripe active, on an EDD admin page other than the dashboard.
+	 */
+	private function set_stripe_card_elements_context(): void {
+		add_filter( 'edd_is_admin_page', array( $this, 'filter_is_edd_admin_page' ), 10, 4 );
+		edd_update_option( 'gateways', array( 'stripe' => 1 ) );
+		edd_update_option( 'stripe_elements_mode', 'card-elements' );
+	}
+
+	/**
+	 * Reports every EDD admin page as current except the WordPress dashboard.
+	 *
+	 * @param bool   $found       Whether the current page is an EDD admin page.
+	 * @param string $page        The page slug.
+	 * @param string $view        The view slug.
+	 * @param string $passed_page The page slug being checked.
+	 * @return bool
+	 */
+	public function filter_is_edd_admin_page( $found, $page, $view, $passed_page ): bool {
+		return 'index.php' !== $passed_page;
+	}
 
 	/**
 	 * Retrieves the private $notices array via reflection.

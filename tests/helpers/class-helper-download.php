@@ -326,7 +326,7 @@ class EDD_Helper_Download extends EDD_UnitTestCase {
 	 *
 	 * @return array The filtered download files.
 	 */
-	public function helper_filter_download_files( $files, $download_id, $payment_id ) {
+	public static function helper_filter_download_files( $files, $download_id, $payment_id ) {
 		$files = array(
 			array (
 				'index'          => '0',

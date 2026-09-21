@@ -111,8 +111,9 @@ bin/run-tests-local.sh -p 8.3 -w latest -m
 ```
 
 ## Writing Tests
-For more information on how to write PHPUnit Tests, see [PHPUnit's Website](http://www.phpunit.de/manual/3.6/en/writing-tests-for-phpunit.html).
+For more information on how to write PHPUnit Tests, see [PHPUnit's Website](https://docs.phpunit.de/en/9.6/writing-tests-for-phpunit.html). Use the 9.6 docs, not `latest` — we run PHPUnit 9.6.
 
+### Filtering
 While writing tests, you may found it helpful to only run the specific tests, file or namespace you are working in. To do this you can use the `-f` filter.
 
 ```

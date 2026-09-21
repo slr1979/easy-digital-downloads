@@ -195,6 +195,27 @@ class Cart extends EDD_UnitTestCase {
 		edd_empty_cart();
 	}
 
+	/**
+	 * The update button prints the stored button color as a class, so the class is escaped.
+	 */
+	public function test_the_update_cart_button_escapes_the_button_color_class() {
+		global $edd_options;
+
+		$edd_options['item_quantities'] = 1;
+		$edd_options['checkout_color']  = 'blue" onmouseover="alert(1)';
+
+		ob_start();
+		edd_update_cart_button();
+		$button = ob_get_clean();
+
+		// Restored before any assertion, so a failure cannot leave the options behind for later tests.
+		unset( $edd_options['item_quantities'], $edd_options['checkout_color'] );
+
+		$this->assertStringContainsString( 'edd_update_cart_submit', $button, 'Fixture: quantities must be enabled, or the button does not render.' );
+		$this->assertStringNotContainsString( '" onmouseover="', $button );
+		$this->assertStringContainsString( '&quot; onmouseover=&quot;', $button );
+	}
+
 	public function test_endpoints() {
 		global $wp_rewrite;
 
@@ -520,6 +541,230 @@ class Cart extends EDD_UnitTestCase {
 		$this->assertEquals( false, edd_get_cart_item_price( 0 ) );
 	}
 
+	/**
+	 * get_item_price() has no price to return for a cart item whose price option does not
+	 * resolve. `add()` never writes a cart item in this state; this exercises the guard directly,
+	 * for a cart item written by some other path.
+	 *
+	 * Falling back to the product's `edd_price` meta charges the cheapest tier, or nothing
+	 * at all when that meta was never written.
+	 */
+	public function test_get_item_price_returns_false_for_an_unresolvable_price_option() {
+		// Assert the fixture: the download really is variable priced.
+		$this->assertTrue( edd_has_variable_prices( self::$download->ID ) );
+
+		$this->assertFalse( EDD()->cart->get_item_price( self::$download->ID, array() ) );
+	}
+
+	/**
+	 * A price option which is not one of the product's own is not a price.
+	 */
+	public function test_variable_price_with_an_unknown_price_id_is_not_priced() {
+		$this->assertFalse( EDD()->cart->get_item_price( self::$download->ID, array( 'price_id' => 99 ) ) );
+	}
+
+	/**
+	 * The fallback is not reinstated by the product having a price meta value.
+	 */
+	public function test_variable_price_with_no_price_id_does_not_fall_back_to_the_download_price() {
+		update_post_meta( self::$download->ID, 'edd_price', '20.00' );
+
+		$price = EDD()->cart->get_item_price( self::$download->ID, array() );
+
+		update_post_meta( self::$download->ID, 'edd_price', '0.00' );
+
+		$this->assertFalse( $price );
+	}
+
+	/**
+	 * The control: a real price option is still priced from that option.
+	 */
+	public function test_variable_price_with_a_price_id_is_priced() {
+		$this->assertEquals( 100.00, (float) EDD()->cart->get_item_price( self::$download->ID, array( 'price_id' => 1 ) ) );
+	}
+
+	/**
+	 * An item with no resolvable price does not stay in the cart.
+	 *
+	 * Excluding it from the calculated details alone is not enough: the raw contents are what
+	 * the checkout form's empty cart guard reads, so the purchase would still go through and
+	 * create a zero total order.
+	 */
+	public function test_unpriceable_item_is_removed_from_the_cart_contents() {
+		$cart = array(
+			array(
+				'id'       => self::$download->ID,
+				'options'  => array(),
+				'quantity' => 1,
+			),
+		);
+
+		EDD()->session->set( 'edd_cart', $cart );
+		EDD()->cart->contents = $cart;
+		EDD()->cart->invalidate_cache();
+
+		// Assert the fixture: the item is in the cart contents before it is read back.
+		$this->assertCount( 1, EDD()->cart->contents );
+
+		$contents = EDD()->cart->get_contents();
+
+		edd_empty_cart();
+
+		$this->assertEmpty( $contents );
+	}
+
+	/**
+	 * A filter which adjusts the price cannot turn "no price" into "free".
+	 *
+	 * Callbacks on `edd_cart_item_price` are entitled to do arithmetic on what they are handed,
+	 * and `false` is zero in arithmetic: `false / 1.2` is `0.0`, which is not `false`. A
+	 * tax-inclusive adjustment is exactly this shape — see
+	 * EDD\Pro\Taxes\VAT\Checkout::maybe_adjust_cart_item_price() — so an unpriceable item
+	 * would have survived the drop checks and been sold for nothing.
+	 */
+	public function test_an_adjusting_price_filter_cannot_turn_no_price_into_free() {
+		$cart = array(
+			array(
+				'id'       => self::$download->ID,
+				'options'  => array(),
+				'quantity' => 1,
+			),
+		);
+
+		EDD()->session->set( 'edd_cart', $cart );
+		EDD()->cart->contents = $cart;
+		EDD()->cart->invalidate_cache();
+
+		// The shape of a tax-inclusive adjustment: it divides rather than replaces.
+		$adjust = function ( $price ) {
+			return $price / 1.2;
+		};
+		add_filter( 'edd_cart_item_price', $adjust );
+
+		$price    = EDD()->cart->get_item_price( self::$download->ID, array() );
+		$contents = EDD()->cart->get_contents();
+
+		remove_filter( 'edd_cart_item_price', $adjust );
+		edd_empty_cart();
+
+		$this->assertFalse( $price );
+		$this->assertEmpty( $contents );
+	}
+
+	/**
+	 * A price of false from the filter alone leaves the cart as it was.
+	 *
+	 * Core can price this item, so it is not the unpriceable state the new guards are for, and
+	 * get_contents() and get_contents_details() have to agree about it.
+	 */
+	public function test_filtered_false_price_does_not_diverge_contents_from_details() {
+		$cart = array(
+			array(
+				'id'       => self::$download->ID,
+				'options'  => array( 'price_id' => 1 ),
+				'quantity' => 1,
+			),
+		);
+
+		EDD()->session->set( 'edd_cart', $cart );
+		EDD()->cart->contents = $cart;
+		EDD()->cart->invalidate_cache();
+
+		add_filter( 'edd_cart_item_price', '__return_false' );
+
+		$contents = EDD()->cart->get_contents();
+		EDD()->cart->invalidate_cache();
+		$details = EDD()->cart->get_contents_details();
+
+		remove_filter( 'edd_cart_item_price', '__return_false' );
+		edd_empty_cart();
+
+		$this->assertCount( 1, $contents );
+		$this->assertCount( 1, $details );
+	}
+
+	/**
+	 * An extension which prices its own cart items keeps them.
+	 *
+	 * `edd_cart_item_price` is handed `false` for an item core cannot price, and that filtered
+	 * price is what decides whether the item stays in the cart. `edd-custom-prices` relies on
+	 * this: it prices variable products whose price option is not one of the registered ones.
+	 */
+	public function test_filtered_price_keeps_an_otherwise_unpriceable_item() {
+		$cart = array(
+			array(
+				'id'       => self::$download->ID,
+				'options'  => array(),
+				'quantity' => 1,
+			),
+		);
+
+		EDD()->session->set( 'edd_cart', $cart );
+		EDD()->cart->contents = $cart;
+		EDD()->cart->invalidate_cache();
+
+		$filter = function ( $price ) {
+			return false === $price ? 42.00 : $price;
+		};
+		add_filter( 'edd_cart_item_price', $filter );
+
+		$contents = EDD()->cart->get_contents();
+		$price    = EDD()->cart->get_item_price( self::$download->ID, array() );
+
+		remove_filter( 'edd_cart_item_price', $filter );
+		edd_empty_cart();
+
+		$this->assertCount( 1, $contents );
+		$this->assertEquals( 42.00, (float) $price );
+	}
+
+	/**
+	 * An item with no resolvable price is not sold.
+	 *
+	 * A price of false is zero in arithmetic, so an unpriceable item left in the cart would
+	 * be handed over for free rather than at the cheapest tier.
+	 */
+	public function test_unpriceable_item_is_excluded_from_the_cart_details() {
+		$cart = array(
+			array(
+				'id'       => self::$download->ID,
+				'options'  => array(),
+				'quantity' => 1,
+			),
+		);
+
+		EDD()->session->set( 'edd_cart', $cart );
+		EDD()->cart->contents = $cart;
+		EDD()->cart->invalidate_cache();
+
+		// Assert the fixture: the item is in the cart contents.
+		$this->assertCount( 1, EDD()->cart->contents );
+
+		$details = EDD()->cart->get_contents_details();
+
+		edd_empty_cart();
+
+		$this->assertEmpty( $details );
+	}
+
+	/**
+	 * A product flagged as variable priced with no price options is priced from its own meta.
+	 *
+	 * There is no price option to resolve against, so the price has to come from `edd_price`.
+	 * On 3.7.0 this came out as `0.00`, because the fallback's `false === $price` guard never
+	 * matched: at that point `$price` is still the integer `0`, not `false`.
+	 */
+	public function test_variable_flag_without_price_options_is_priced_from_the_download_price() {
+		$bundle = \EDD\Tests\Helpers\EDD_Helper_Download::create_bundled_download();
+
+		// Assert the fixture: flagged variable priced, and carrying no price options at all.
+		$this->assertTrue( (bool) edd_has_variable_prices( $bundle->ID ) );
+		$this->assertEmpty( edd_get_variable_prices( $bundle->ID ) );
+		$this->assertEquals( 9.99, (float) edd_get_download_price( $bundle->ID ) );
+
+		$this->assertEquals( 9.99, (float) EDD()->cart->get_item_price( $bundle->ID, array() ) );
+	}
+
 	public function test_remove_from_cart() {
 
 		edd_empty_cart();
@@ -600,7 +845,7 @@ class Cart extends EDD_UnitTestCase {
 
 	public function test_generate_cart_token() {
 		$this->assertIsString( edd_generate_cart_token() );
-		$this->assertTrue( 32 === strlen( edd_generate_cart_token() ) );
+		$this->assertTrue( 40 === strlen( edd_generate_cart_token() ) );
 	}
 
 	public function test_edd_get_cart_item_name() {

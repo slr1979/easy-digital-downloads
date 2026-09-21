@@ -2,6 +2,28 @@
 
 set -eo pipefail
 
+# Describe a matrix list from tests/phpunit-matrix.json, so this help cannot
+# drift from the cells that actually run. Called before the cd below, so it
+# resolves the file from $0 rather than the caller's working directory.
+describe_matrix_list() {
+  local list_name="$1"
+  local matrix_file
+  matrix_file="$(cd "$(dirname "$0")/.." && pwd)/tests/phpunit-matrix.json"
+
+  if ! command -v jq >/dev/null 2>&1 || [ ! -f "$matrix_file" ]; then
+    echo "(install jq to list the cells)"
+    return
+  fi
+
+  jq -r --arg l "$list_name" '
+    .[$l].cells
+    | "\(length)-cell: " + (
+        map( "{PHP \(.php) / WP \(.wp)" + ( if .ms == 1 then " multisite" else "" end ) + "}" )
+        | join( ", " )
+      )
+  ' "$matrix_file"
+}
+
 show_help() {
   printf -- 'Usage: %s [OPTIONS]\n\n' "$0";
 
@@ -26,18 +48,19 @@ show_help() {
   echo "";
   printf -- '-h, --help\t\tShow this help.\n';
   echo "";
-  echo "Matrix list guide (mirrors .github/workflows/CI.yml):";
-  echo "  pr        4-cell fast gate — runs on every PR.";
-  echo "            {PHP 8.0 / WP 6.7}, {PHP 8.4 / WP latest}, {PHP 8.2 / WP latest}, {PHP 8.3 / WP latest multisite}.";
-  echo "  full      5-cell broad check — runs on push to main/release.";
-  echo "            {PHP 8.0 / WP 6.7}, {PHP 8.2 / WP 6.7}, {PHP 8.2 / WP latest}, {PHP 8.4 / WP latest}, {PHP 8.3 / WP latest multisite}.";
-  echo "  coverage  1-cell coverage baseline — {PHP 8.0 / WP 6.7}.";
+  echo "Matrix list guide (mirrors .github/workflows/CI.yml, read from tests/phpunit-matrix.json):";
+  echo "  pr        Fast gate — runs on every PR.";
+  echo "            $(describe_matrix_list pr)";
+  echo "  full      Broad check — runs on push to main/release.";
+  echo "            $(describe_matrix_list full)";
+  echo "  coverage  The cell the CI coverage job runs, with Xdebug.";
+  echo "            $(describe_matrix_list coverage)";
   echo "";
   echo "Examples:";
-  echo "  $0                                   # Default: PR matrix (4 cells)";
-  echo "  $0 --matrix                          # PR matrix (4 cells), explicit";
+  echo "  $0                                   # Default: PR matrix";
+  echo "  $0 --matrix                          # PR matrix, explicit";
   echo "  $0 --matrix=pr                       # Same as above, explicit list name";
-  echo "  $0 --matrix=full                     # 5-cell full matrix";
+  echo "  $0 --matrix=full                     # Full matrix";
   echo "  $0 --matrix --retry                  # PR matrix with auto-retry on failures";
   echo "  $0 --matrix --filter 'Discounts'     # PR matrix filtered to 'Discounts' tests";
   echo "  $0 -p 8.2 -w latest                  # Single cell: PHP 8.2 / WP latest";

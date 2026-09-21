@@ -49,9 +49,4 @@
 			<directory>./includes/blocks/views</directory>
 		</exclude>
 	</coverage>
-	<groups>
-		<exclude>
-			<group>edd_ajax</group>
-		</exclude>
-	</groups>
 </phpunit>

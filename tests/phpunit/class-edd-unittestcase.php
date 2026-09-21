@@ -99,6 +99,8 @@ abstract class EDD_UnitTestCase extends BaseTestCase {
 	public function tearDown(): void {
 		// Clear any static caches that might interfere with other tests.
 		\EDD\Admin\Utils\Page::clear_cache();
+		\EDD\Elementor\Utils\Page::clear_cache();
+		\EDD\Reports\Filters\RequestCache::reset();
 
 		parent::tearDown();
 	}
@@ -200,17 +202,20 @@ abstract class EDD_UnitTestCase extends BaseTestCase {
 	protected static function _delete_all_edd_data() {
 		edd_setup_components();
 
+		// reset() rather than truncate(): same resulting state, but 30 TRUNCATEs
+		// per test class cost about 5% of the suite's runtime, even though the
+		// tables are usually already empty by the time this runs.
 		foreach ( EDD()->components as $component ) {
 			$thing = $component->get_interface( 'table' );
 
 			if ( $thing instanceof \EDD\Database\Table ) {
-				$thing->truncate();
+				$thing->reset();
 			}
 
 			$thing = $component->get_interface( 'meta' );
 
 			if ( $thing instanceof \EDD\Database\Table ) {
-				$thing->truncate();
+				$thing->reset();
 			}
 		}
 

@@ -475,7 +475,8 @@ class Accessibility extends EDD_UnitTestCase {
 		$errors = edd_get_errors();
 		$html   = edd_build_errors_html( $errors );
 
-		$this->assertStringContainsString( 'class="edd-errors', $html );
+		$this->assertStringContainsString( 'edd_errors', $html );
+		$this->assertStringContainsString( 'edd-errors', $html );
 		$this->assertStringContainsString( 'edd-alert', $html );
 		$this->assertStringContainsString( 'edd-alert-error', $html );
 	}

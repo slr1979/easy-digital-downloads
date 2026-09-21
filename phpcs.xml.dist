@@ -20,6 +20,13 @@
  		<exclude name="WordPress.NamingConventions.ValidFunctionName.FunctionDoubleUnderscore" />
 	</rule>
 
+	<!-- internal hooks use the `edd/` namespace, so `/` is a valid word delimiter. -->
+	<rule ref="WordPress.NamingConventions.ValidHookName">
+		<properties>
+			<property name="additionalWordDelimiters" value="/"/>
+		</properties>
+	</rule>
+
 	<rule ref="WordPress-Docs"/>
 
 	<rule ref="WordPress.WP.I18n"/>

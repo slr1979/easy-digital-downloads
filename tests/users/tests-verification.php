@@ -72,10 +72,8 @@ class Verification extends EDD_UnitTestCase {
 		// Set current user for AJAX tests.
 		wp_set_current_user( $this->user_id );
 
-		// Mock AJAX.
-		if ( ! defined( 'DOING_AJAX' ) ) {
-			define( 'DOING_AJAX', true );
-		}
+		// Mock AJAX via the filter production checks, not the DOING_AJAX constant.
+		add_filter( 'wp_doing_ajax', '__return_true' );
 
 		// Add AJAX die handler to capture responses.
 		add_filter( 'wp_die_ajax_handler', array( $this, 'get_die_handler' ), 1, 1 );
@@ -110,8 +108,9 @@ class Verification extends EDD_UnitTestCase {
 	 * Tear down each test.
 	 */
 	public function tearDown(): void {
-		// Remove die handler.
+		// Remove die handler and AJAX mode filter.
 		remove_filter( 'wp_die_ajax_handler', array( $this, 'get_die_handler' ), 1 );
+		remove_filter( 'wp_doing_ajax', '__return_true' );
 
 		// Clean up transients.
 		delete_transient( 'edd_verification_resend_cooldown_' . $this->user_id );

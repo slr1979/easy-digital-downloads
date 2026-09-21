@@ -74,4 +74,44 @@ class PersonalInfo extends EDD_UnitTestCase {
 			'Action edd_purchase_form_after_email did not fire during render_fields.'
 		);
 	}
+
+	/**
+	 * The fields read their values out of the customer session directly. A session written
+	 * without every key, as an integration storing only an email leaves it, warns on the
+	 * missing keys instead of rendering.
+	 *
+	 * PHPUnit converts warnings to exceptions, so an undefined-key warning fails this test.
+	 */
+	public function test_user_info_fields_render_partial_customer_session() {
+		wp_set_current_user( 0 );
+		EDD()->session->set( 'customer', array( 'email' => 'guest@example.com' ) );
+
+		// Assert the fixture: the session holds only the email, as reported.
+		$this->assertSame( array( 'email' => 'guest@example.com' ), EDD()->session->get( 'customer' ) );
+
+		ob_start();
+		edd_user_info_fields();
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'guest@example.com', $output );
+		$this->assertStringContainsString( 'edd-first', $output );
+		$this->assertStringContainsString( 'edd-last', $output );
+	}
+
+	/**
+	 * The same partial session reaching the fields through the block/Elementor path.
+	 */
+	public function test_render_fields_with_partial_customer_session() {
+		wp_set_current_user( 0 );
+		EDD()->session->set( 'customer', array( 'email' => 'guest@example.com' ) );
+
+		ob_start();
+		Handler::render_fields(
+			array( Email::class, FirstName::class, LastName::class ),
+			\EDD\Sessions\Customer::get()
+		);
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'guest@example.com', $output );
+	}
 }

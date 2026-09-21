@@ -169,7 +169,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => '',
 				'edd_user_pass'       => '',
 				'edd_user_pass2'      => '',
-			)
+			) + $this->registration_token()
 		);
 
 		$errors = edd_get_errors();
@@ -196,7 +196,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => null,
 				'edd_user_pass'       => 'password',
 				'edd_user_pass2'      => 'other-password',
-			)
+			) + $this->registration_token()
 		);
 		$this->assertArrayHasKey( 'username_unavailable', edd_get_errors() );
 		$this->assertArrayHasKey( 'password_mismatch', edd_get_errors() );
@@ -219,7 +219,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => null,
 				'edd_user_pass'       => 'password',
 				'edd_user_pass2'      => 'other-password',
-			)
+			) + $this->registration_token()
 		);
 		$this->assertArrayHasKey( 'username_invalid', edd_get_errors() );
 
@@ -243,7 +243,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_payment_email'   => 'someotheradminexample.org',
 				'edd_user_pass'       => '',
 				'edd_user_pass2'      => '',
-			)
+			) + $this->registration_token()
 		);
 		$this->assertArrayHasKey( 'email_unavailable', edd_get_errors() );
 		$this->assertArrayHasKey( 'payment_email_invalid', edd_get_errors() );
@@ -260,7 +260,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_login'      => 'sample_user',
 				'edd_user_email'      => 'sample@edd.local',
 				'edd_user_pass'       => 'password',
-			)
+			) + $this->registration_token()
 		);
 		$this->assertArrayHasKey( 'password_mismatch', edd_get_errors() );
 
@@ -275,7 +275,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => 'test@test.com',
 				'edd_user_pass'       => 'password',
 				'edd_user_pass2'      => 'password',
-			)
+			) + $this->registration_token()
 		);
 
 		$this->assertEmpty( edd_get_errors() );
@@ -292,7 +292,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => 'test@test.com',
 				'edd_user_pass'       => 'password',
 				'edd_user_pass2'      => 'password',
-			)
+			) + $this->registration_token()
 		);
 
 		$user = get_user_by( 'login', 'test4324' );
@@ -377,7 +377,7 @@ class LoginRegister extends EDD_UnitTestCase {
 				'edd_user_email'      => 'second_email@edd.local',
 				'edd_user_pass'       => 'password',
 				'edd_user_pass2'      => 'password',
-			)
+			) + $this->registration_token()
 		);
 		$this->assertArrayHasKey( 'email_unavailable', edd_get_errors() );
 
@@ -438,5 +438,19 @@ class LoginRegister extends EDD_UnitTestCase {
 			)
 		);
 		$this->assertArrayHasKey( 'password_reset_unsuccessful', edd_get_errors() );
+	}
+
+	/**
+	 * A fresh token pair, as the registration form emits.
+	 *
+	 * @return array
+	 */
+	private function registration_token() {
+		$timestamp = time();
+
+		return array(
+			'edd_register_timestamp' => $timestamp,
+			'edd_register_token'     => \EDD\Utils\Tokenizer::tokenize( 'edd-register-' . $timestamp ),
+		);
 	}
 }
